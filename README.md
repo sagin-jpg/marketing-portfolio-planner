@@ -62,3 +62,16 @@ CPA is calculated as:
 `CPA = CPL / (Potential Conversion × Approval Ratio)`
 
 Changing CPL, potential conversion, or approval ratio updates CPA, required leads, marketing spend, ROI, and target profit.
+
+
+## ROI and gross marketing profitability
+
+- ROI is displayed as a multiple such as `2.1x`.
+- ROI of `1.0x` or higher is shown in green.
+- ROI below `1.0x` is shown in red.
+- Gross Marketing Profitability = Net Deposits - Marketing Spend.
+
+
+## Portfolio total row
+
+The Executive Overview country matrix includes a highlighted TOTAL PORTFOLIO row above all country rows. It sums target and actual performance and calculates weighted portfolio CPA and attainment.

@@ -71,7 +71,20 @@ def pct(x: float) -> str:
 
 
 def multiple(x: float) -> str:
-    return f"{x:,.2f}x"
+    return f"{x:,.1f}x"
+
+
+def colored_kpi(label: str, value: str, positive: bool) -> None:
+    css_class = "kpi-positive" if positive else "kpi-negative"
+    st.markdown(
+        f"""
+        <div class="kpi-box">
+          <div class="kpi-label">{label}</div>
+          <div class="{css_class}">{value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 @st.cache_data
@@ -241,6 +254,7 @@ def calculate_target(row: dict[str, Any]) -> dict[str, float]:
         "target_cpa": cpa,
         "target_ndp": ndp,
         "target_roi": roi,
+        "target_gross_profitability": ndp - spend,
         "target_profit": profit,
     }
 
@@ -362,6 +376,14 @@ def gap_df() -> pd.DataFrame:
     merged["lead_gap"] = merged["leads"] - merged["target_leads"]
     merged["spend_gap"] = merged["marketing_cost"] - merged["target_spend"]
     merged["cpa_gap"] = merged["cpa"] - merged["target_cpa"]
+    merged["actual_gross_profitability"] = merged["ndp"] - merged["marketing_cost"]
+    merged["target_gross_profitability"] = (
+        merged["target_ndp"] - merged["target_spend"]
+    )
+    merged["gross_profitability_gap"] = (
+        merged["actual_gross_profitability"]
+        - merged["target_gross_profitability"]
+    )
     merged["ndp_gap"] = merged["ndp"] - merged["target_ndp"]
     return merged
 
@@ -420,6 +442,30 @@ div[role="radiogroup"] label:has(input:checked) {
   border-color:#2563EB;
 }
 div[role="radiogroup"] label:has(input:checked) p {color:#2563EB!important;}
+.kpi-positive {
+  color: #16A34A;
+  font-size: 2rem;
+  font-weight: 750;
+  line-height: 1.1;
+}
+.kpi-negative {
+  color: #DC2626;
+  font-size: 2rem;
+  font-weight: 750;
+  line-height: 1.1;
+}
+.kpi-label {
+  color: #475569;
+  font-size: .9rem;
+  margin-bottom: .25rem;
+}
+.kpi-box {
+  border: 1px solid rgba(100,116,139,.22);
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.96));
+  box-shadow: 0 8px 24px rgba(15,23,42,.04);
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -501,6 +547,10 @@ if nav == "🏠 Executive Overview":
     actual_ndp = actual["ndp"].sum() if not actual.empty else 0
 
     st.subheader("Portfolio Scorecard")
+    target_roi_total = safe_div(target_ndp, target_spend)
+    actual_roi_total = safe_div(actual_ndp, actual_spend)
+    actual_gross_profitability = actual_ndp - actual_spend
+
     c1,c2,c3,c4,c5,c6 = st.columns(6)
     c1.metric("Target FTDs", number(target_ftds))
     c2.metric("Actual FTDs", number(actual_ftds), delta=number(actual_ftds-target_ftds))
@@ -508,6 +558,18 @@ if nav == "🏠 Executive Overview":
     c4.metric("Target Spend", currency(target_spend))
     c5.metric("Actual Spend", currency(actual_spend), delta=currency(actual_spend-target_spend))
     c6.metric("NDP Gap", currency(actual_ndp-target_ndp))
+
+    r1, r2, r3 = st.columns(3)
+    with r1:
+        colored_kpi("Target ROI", multiple(target_roi_total), target_roi_total >= 1.0)
+    with r2:
+        colored_kpi("Actual ROI", multiple(actual_roi_total), actual_roi_total >= 1.0)
+    with r3:
+        colored_kpi(
+            "Gross Marketing Profitability",
+            currency(actual_gross_profitability),
+            actual_gross_profitability >= 0,
+        )
 
     col1, col2 = st.columns([0.42,0.58])
     with col1:
@@ -548,22 +610,87 @@ if nav == "🏠 Executive Overview":
     matrix = gap[[
         "country","target_ftds","ftds","ftd_gap","ftd_attainment",
         "target_spend","marketing_cost","spend_gap",
-        "target_cpa","cpa","cpa_gap","target_ndp","ndp","ndp_gap"
+        "target_cpa","cpa","cpa_gap","target_ndp","ndp","ndp_gap",
+        "target_gross_profitability","actual_gross_profitability",
+        "gross_profitability_gap"
     ]].sort_values("target_ftds", ascending=False)
 
-    display = matrix.copy()
+    # Add a highlighted portfolio total row above the first country row.
+    total_target_ftds = matrix["target_ftds"].sum()
+    total_actual_ftds = matrix["ftds"].sum()
+    total_target_spend = matrix["target_spend"].sum()
+    total_actual_spend = matrix["marketing_cost"].sum()
+    total_target_ndp = matrix["target_ndp"].sum()
+    total_actual_ndp = matrix["ndp"].sum()
+
+    total_row = pd.DataFrame([{
+        "country": "TOTAL PORTFOLIO",
+        "target_ftds": total_target_ftds,
+        "ftds": total_actual_ftds,
+        "ftd_gap": total_actual_ftds - total_target_ftds,
+        "ftd_attainment": safe_div(total_actual_ftds, total_target_ftds),
+        "target_spend": total_target_spend,
+        "marketing_cost": total_actual_spend,
+        "spend_gap": total_actual_spend - total_target_spend,
+        "target_cpa": safe_div(total_target_spend, total_target_ftds),
+        "cpa": safe_div(total_actual_spend, total_actual_ftds),
+        "cpa_gap": (
+            safe_div(total_actual_spend, total_actual_ftds)
+            - safe_div(total_target_spend, total_target_ftds)
+        ),
+        "target_ndp": total_target_ndp,
+        "ndp": total_actual_ndp,
+        "ndp_gap": total_actual_ndp - total_target_ndp,
+        "target_gross_profitability": (
+            matrix["target_gross_profitability"].sum()
+        ),
+        "actual_gross_profitability": (
+            matrix["actual_gross_profitability"].sum()
+        ),
+        "gross_profitability_gap": (
+            matrix["gross_profitability_gap"].sum()
+        ),
+    }])
+
+    matrix_with_total = pd.concat([total_row, matrix], ignore_index=True)
+
+    display = matrix_with_total.copy()
     for c in ["target_ftds","ftds","ftd_gap"]:
         display[c] = display[c].map(number)
     display["ftd_attainment"] = display["ftd_attainment"].map(pct)
-    for c in ["target_spend","marketing_cost","spend_gap","target_cpa","cpa","cpa_gap","target_ndp","ndp","ndp_gap"]:
+    for c in [
+        "target_spend","marketing_cost","spend_gap","target_cpa","cpa","cpa_gap",
+        "target_ndp","ndp","ndp_gap","target_gross_profitability",
+        "actual_gross_profitability","gross_profitability_gap"
+    ]:
         display[c] = display[c].map(currency)
 
     display.columns = [
         "Country","Target FTDs","Actual FTDs","FTD Gap","Attainment",
         "Target Spend","Actual Spend","Spend Gap","Target CPA","Actual CPA","CPA Gap",
-        "Target NDP","Actual NDP","NDP Gap"
+        "Target NDP","Actual NDP","NDP Gap","Target Gross Profitability",
+        "Actual Gross Profitability","Gross Profitability Gap"
     ]
-    st.dataframe(display, use_container_width=True, hide_index=True, height=580)
+
+    def highlight_total_row(row):
+        if row["Country"] == "TOTAL PORTFOLIO":
+            return [
+                "background-color: #DBEAFE; color: #0F172A; font-weight: 800;"
+                for _ in row
+            ]
+        return ["" for _ in row]
+
+    styled_display = display.style.apply(highlight_total_row, axis=1)
+
+    st.dataframe(
+        styled_display,
+        use_container_width=True,
+        hide_index=True,
+        height=620,
+        column_config={
+            "Country": st.column_config.TextColumn("Country", pinned=True),
+        },
+    )
 
 elif nav == "🎯 Target Planner":
     st.subheader(f"Target Planner — {st.session_state.current_plan_key}")
@@ -633,12 +760,29 @@ elif nav == "🎯 Target Planner":
     )
 
     st.subheader("Target Economics")
+    target_spend_total = t["target_spend"].sum()
+    target_ndp_total = t["target_ndp"].sum()
+    target_roi_total = safe_div(target_ndp_total, target_spend_total)
+    target_gross_profitability_total = (
+        target_ndp_total - target_spend_total
+    )
+
     c1,c2,c3,c4,c5 = st.columns(5)
     c1.metric("Target FTDs", number(t["target_ftds"].sum()))
     c2.metric("Required Leads", number(t["target_leads"].sum()))
-    c3.metric("Marketing Spend", currency(t["target_spend"].sum()))
-    c4.metric("Target NDP", currency(t["target_ndp"].sum()))
+    c3.metric("Marketing Spend", currency(target_spend_total))
+    c4.metric("Target NDP", currency(target_ndp_total))
     c5.metric("Target Profit", currency(t["target_profit"].sum()))
+
+    p1, p2 = st.columns(2)
+    with p1:
+        colored_kpi("Target ROI", multiple(target_roi_total), target_roi_total >= 1.0)
+    with p2:
+        colored_kpi(
+            "Gross Marketing Profitability",
+            currency(target_gross_profitability_total),
+            target_gross_profitability_total >= 0,
+        )
 
     fig = px.treemap(
         t[t["target_ftds"]>0],
@@ -763,11 +907,15 @@ elif nav == "⚖️ Gap Analysis":
             filtered = filtered[filtered["ftd_gap"] < 0]
         filtered = filtered.sort_values("ftd_gap").head(int(top_n))
 
-        c1,c2,c3,c4 = st.columns(4)
+        c1,c2,c3,c4,c5 = st.columns(5)
         c1.metric("Total FTD Gap", number(gap["ftd_gap"].sum()))
         c2.metric("Spend Gap", currency(gap["spend_gap"].sum()))
         c3.metric("NDP Gap", currency(gap["ndp_gap"].sum()))
-        c4.metric("Countries Below Target", int((gap["ftd_gap"]<0).sum()))
+        c4.metric(
+            "Gross Profitability Gap",
+            currency(gap["gross_profitability_gap"].sum()),
+        )
+        c5.metric("Countries Below Target", int((gap["ftd_gap"]<0).sum()))
 
         fig = px.bar(
             filtered,
@@ -822,6 +970,29 @@ elif nav == "🌍 Country Drilldown":
     c5.metric("Target Spend", currency(trow["target_spend"]))
     c6.metric("Actual Spend", currency(arow["marketing_cost"]), delta=currency(arow["marketing_cost"]-trow["target_spend"]))
 
+    target_country_roi = safe_div(trow["target_ndp"], trow["target_spend"])
+    actual_country_roi = safe_div(arow["ndp"], arow["marketing_cost"])
+    target_country_gross = trow["target_ndp"] - trow["target_spend"]
+    actual_country_gross = arow["ndp"] - arow["marketing_cost"]
+
+    rr1, rr2, rr3, rr4 = st.columns(4)
+    with rr1:
+        colored_kpi("Target ROI", multiple(target_country_roi), target_country_roi >= 1.0)
+    with rr2:
+        colored_kpi("Actual ROI", multiple(actual_country_roi), actual_country_roi >= 1.0)
+    with rr3:
+        colored_kpi(
+            "Target Gross Profitability",
+            currency(target_country_gross),
+            target_country_gross >= 0,
+        )
+    with rr4:
+        colored_kpi(
+            "Actual Gross Profitability",
+            currency(actual_country_gross),
+            actual_country_gross >= 0,
+        )
+
     if not country_actual.empty:
         fig = px.line(
             country_actual,
@@ -862,6 +1033,13 @@ elif nav == "🧪 Plan Comparison":
                 target_spend=("target_spend","sum"),
                 target_ndp=("target_ndp","sum"),
                 target_profit=("target_profit","sum"),
+            )
+            summary["target_roi"] = summary.apply(
+                lambda r: safe_div(r["target_ndp"], r["target_spend"]),
+                axis=1,
+            )
+            summary["gross_marketing_profitability"] = (
+                summary["target_ndp"] - summary["target_spend"]
             )
             st.dataframe(summary, use_container_width=True, hide_index=True)
             fig = px.bar(summary, x="plan", y=["target_ftds","target_spend","target_profit"], barmode="group")
