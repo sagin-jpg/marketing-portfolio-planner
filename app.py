@@ -729,17 +729,44 @@ if nav == "🏠 Executive Overview":
     ]:
         display[c] = display[c].map(currency)
 
-    display.columns = [
+    display = display.rename(columns={
+        "country": "Country",
+        "target_ftds": "Target FTDs",
+        "ftds": "Actual FTDs",
+        "ftd_gap": "FTD Gap",
+        "ftd_attainment": "Attainment",
+        "target_spend": "Target Spend",
+        "marketing_cost": "Actual Spend",
+        "spend_gap": "Spend Gap",
+        "cpl": "Target CPL",
+        "potential_conversion": "Potential Conversion",
+        "approval_ratio": "Approval Ratio",
+        "target_conversion": "Target Conversion",
+        "target_cpa": "Calculated Target CPA",
+        "cpa": "Actual CPA",
+        "cpa_gap": "CPA Gap",
+        "target_ndp": "Target NDP",
+        "ndp": "Actual NDP",
+        "ndp_gap": "NDP Gap",
+        "target_gross_profitability": "Target Gross Profitability",
+        "actual_gross_profitability": "Actual Gross Profitability",
+        "gross_profitability_gap": "Gross Profitability Gap",
+    })
+
+
+    display_order = [
         "Country","Target FTDs","Actual FTDs","FTD Gap","Attainment",
         "Target Spend","Actual Spend","Spend Gap","Target CPL",
         "Potential Conversion","Approval Ratio","Target Conversion",
         "Calculated Target CPA","Actual CPA","CPA Gap",
-        "Target NDP","Actual NDP","NDP Gap","Target Gross Profitability",
-        "Actual Gross Profitability","Gross Profitability Gap"
+        "Target NDP","Actual NDP","NDP Gap",
+        "Target Gross Profitability","Actual Gross Profitability",
+        "Gross Profitability Gap",
     ]
+    display = display[[c for c in display_order if c in display.columns]]
 
     def highlight_total_row(row):
-        if row["Country"] == "TOTAL PORTFOLIO":
+        if row.get("Country") == "TOTAL PORTFOLIO":
             return [
                 "background-color: #DBEAFE; color: #0F172A; font-weight: 800;"
                 for _ in row

@@ -91,3 +91,8 @@ The same calculation drives the Target Planner, Executive Overview, country tota
 ## Hotfix
 
 Fixed Executive matrix KeyError by including target leads and target attempts in the matrix dataframe.
+
+
+## Hotfix v2
+
+Replaced fragile dataframe column assignment with explicit rename mapping and ordered column selection.
