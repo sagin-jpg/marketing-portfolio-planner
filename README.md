@@ -72,3 +72,8 @@ Local changes are saved to `country_plans.local.json` when Supabase is not confi
 ## Navigation fix
 
 This build adds visible icon-based top navigation and explicit tab label styling.
+
+
+## Navigation v2
+
+The app now uses an always-visible horizontal radio navigation instead of Streamlit tabs.

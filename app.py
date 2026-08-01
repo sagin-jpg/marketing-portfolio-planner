@@ -281,6 +281,47 @@ st.markdown(
       }
       .small-note {color: #777; font-size: .85rem;}
 
+      /* Always-visible page navigation */
+      div[role="radiogroup"] {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.55rem;
+        margin-bottom: 0.4rem;
+      }
+
+      div[role="radiogroup"] label {
+        border: 1px solid rgba(128,128,128,.30);
+        border-radius: 10px;
+        padding: 0.55rem 0.85rem;
+        background: rgba(128,128,128,.05);
+        min-height: 42px;
+        align-items: center;
+      }
+
+      div[role="radiogroup"] label p {
+        color: #374151 !important;
+        font-weight: 650 !important;
+        opacity: 1 !important;
+      }
+
+      div[role="radiogroup"] label:has(input:checked) {
+        border-color: #2563EB;
+        background: rgba(37,99,235,.10);
+      }
+
+      div[role="radiogroup"] label:has(input:checked) p {
+        color: #2563EB !important;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        div[role="radiogroup"] label p {
+          color: #E5E7EB !important;
+        }
+        div[role="radiogroup"] label:has(input:checked) p {
+          color: #60A5FA !important;
+        }
+      }
+
       /* Keep Streamlit tab labels visible across light/dark/browser themes */
       div[data-baseweb="tab-list"] {
         gap: 0.35rem;
@@ -361,17 +402,27 @@ with st.sidebar:
         "Without Supabase, local file saving only works reliably on your own computer."
     )
 
-tab_dashboard, tab_calculator, tab_sensitivity, tab_data, tab_formulas = st.tabs(
-    [
-        "📊 Portfolio Dashboard",
-        "🧮 Country Calculator",
-        "📈 Sensitivity",
-        "📤 Data & Export",
-        "📘 Formulas",
-    ]
+st.markdown("## Navigation")
+
+navigation_options = [
+    "📊 Portfolio Dashboard",
+    "🧮 Country Calculator",
+    "📈 Sensitivity",
+    "📤 Data & Export",
+    "📘 Formulas",
+]
+
+active_view = st.radio(
+    "Choose view",
+    navigation_options,
+    horizontal=True,
+    label_visibility="collapsed",
+    key="main_navigation",
 )
 
-with tab_dashboard:
+st.divider()
+
+if active_view == "📊 Portfolio Dashboard":
     st.title("Marketing Portfolio Dashboard")
     portfolio = portfolio_dataframe()
 
@@ -416,7 +467,7 @@ with tab_dashboard:
     st.subheader("Top 15 Countries by Leads")
     st.bar_chart(chart_df)
 
-with tab_calculator:
+elif active_view == "🧮 Country Calculator":
     idx = plan_index(selected)
     plan = st.session_state.plans[idx]
     calc = calculate(plan)
@@ -575,7 +626,7 @@ with tab_calculator:
                 "Report NDP": currency(plan["report_ndp"]),
             })
 
-with tab_sensitivity:
+elif active_view == "📈 Sensitivity":
     idx = plan_index(selected)
     plan = st.session_state.plans[idx]
 
@@ -621,7 +672,7 @@ with tab_sensitivity:
     st.subheader("Net Profit by Approval Ratio")
     st.line_chart(sensitivity.set_index("Approval Ratio")[["Net Profit"]])
 
-with tab_data:
+elif active_view == "📤 Data & Export":
     st.title("Data, Backup & Export")
 
     portfolio = portfolio_dataframe()
@@ -666,7 +717,7 @@ with tab_data:
             "Use the included Supabase setup guide for permanent shared data."
         )
 
-with tab_formulas:
+elif active_view == "📘 Formulas":
     st.title("Formula Reference")
     st.markdown(
         """
