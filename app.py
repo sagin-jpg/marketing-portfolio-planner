@@ -235,6 +235,9 @@ def calculate_target(row: dict[str, Any]) -> dict[str, float]:
     approval = min(max(r["approval_ratio"], 0.0), 1.0)
     # Final lead-to-FTD conversion is driven by both deposit intent and payment approval.
     # CPA therefore moves automatically with CPL, potential conversion, and approval ratio.
+    # Unified funnel model used everywhere in the app.
+    # Final conversion = potential deposit-attempt rate × approval ratio.
+    # CPA = CPL ÷ final conversion.
     conversion = potential * approval
     attempts = safe_div(target_ftds, approval)
     leads = safe_div(target_ftds, conversion)
@@ -375,6 +378,23 @@ def gap_df() -> pd.DataFrame:
     merged["ftd_attainment"] = merged.apply(lambda r: safe_div(r["ftds"], r["target_ftds"]), axis=1)
     merged["lead_gap"] = merged["leads"] - merged["target_leads"]
     merged["spend_gap"] = merged["marketing_cost"] - merged["target_spend"]
+    merged["target_cpa_formula"] = merged.apply(
+        lambda r: safe_div(
+            r["cpl_target"],
+            r["potential_conversion"] * r["approval_ratio"],
+        )
+        if "cpl_target" in merged.columns
+        else r["target_cpa"],
+        axis=1,
+    )
+    merged["actual_conversion"] = merged.apply(
+        lambda r: safe_div(r["ftds"], r["leads"]),
+        axis=1,
+    )
+    merged["actual_cpl"] = merged.apply(
+        lambda r: safe_div(r["marketing_cost"], r["leads"]),
+        axis=1,
+    )
     merged["cpa_gap"] = merged["cpa"] - merged["target_cpa"]
     merged["actual_gross_profitability"] = merged["ndp"] - merged["marketing_cost"]
     merged["target_gross_profitability"] = (
@@ -546,6 +566,15 @@ if nav == "🏠 Executive Overview":
     target_ndp = target["target_ndp"].sum()
     actual_ndp = actual["ndp"].sum() if not actual.empty else 0
 
+    # Weighted portfolio funnel metrics.
+    weighted_target_cpl = safe_div(target_spend, target["target_leads"].sum())
+    weighted_target_conversion = safe_div(target_ftds, target["target_leads"].sum())
+    weighted_target_cpa = safe_div(weighted_target_cpl, weighted_target_conversion)
+
+    weighted_actual_cpl = safe_div(actual_spend, actual["leads"].sum()) if not actual.empty else 0
+    weighted_actual_conversion = safe_div(actual_ftds, actual["leads"].sum()) if not actual.empty else 0
+    weighted_actual_cpa = safe_div(weighted_actual_cpl, weighted_actual_conversion)
+
     st.subheader("Portfolio Scorecard")
     target_roi_total = safe_div(target_ndp, target_spend)
     actual_roi_total = safe_div(actual_ndp, actual_spend)
@@ -558,6 +587,19 @@ if nav == "🏠 Executive Overview":
     c4.metric("Target Spend", currency(target_spend))
     c5.metric("Actual Spend", currency(actual_spend), delta=currency(actual_spend-target_spend))
     c6.metric("NDP Gap", currency(actual_ndp-target_ndp))
+
+    e1, e2, e3, e4, e5, e6 = st.columns(6)
+    e1.metric("Target CPL", currency(weighted_target_cpl))
+    e2.metric("Target Conversion", pct(weighted_target_conversion))
+    e3.metric("Calculated Target CPA", currency(weighted_target_cpa))
+    e4.metric("Actual CPL", currency(weighted_actual_cpl))
+    e5.metric("Actual Conversion", pct(weighted_actual_conversion))
+    e6.metric(
+        "Actual CPA",
+        currency(weighted_actual_cpa),
+        delta=currency(weighted_actual_cpa - weighted_target_cpa),
+        delta_color="inverse",
+    )
 
     r1, r2, r3 = st.columns(3)
     with r1:
@@ -610,6 +652,7 @@ if nav == "🏠 Executive Overview":
     matrix = gap[[
         "country","target_ftds","ftds","ftd_gap","ftd_attainment",
         "target_spend","marketing_cost","spend_gap",
+        "cpl","potential_conversion","approval_ratio","target_conversion",
         "target_cpa","cpa","cpa_gap","target_ndp","ndp","ndp_gap",
         "target_gross_profitability","actual_gross_profitability",
         "gross_profitability_gap"
@@ -632,7 +675,23 @@ if nav == "🏠 Executive Overview":
         "target_spend": total_target_spend,
         "marketing_cost": total_actual_spend,
         "spend_gap": total_actual_spend - total_target_spend,
-        "target_cpa": safe_div(total_target_spend, total_target_ftds),
+        "cpl": safe_div(total_target_spend, matrix["target_leads"].sum()),
+        "potential_conversion": safe_div(
+            matrix["target_attempts"].sum(),
+            matrix["target_leads"].sum(),
+        ),
+        "approval_ratio": safe_div(
+            total_target_ftds,
+            matrix["target_attempts"].sum(),
+        ),
+        "target_conversion": safe_div(
+            total_target_ftds,
+            matrix["target_leads"].sum(),
+        ),
+        "target_cpa": safe_div(
+            safe_div(total_target_spend, matrix["target_leads"].sum()),
+            safe_div(total_target_ftds, matrix["target_leads"].sum()),
+        ),
         "cpa": safe_div(total_actual_spend, total_actual_ftds),
         "cpa_gap": (
             safe_div(total_actual_spend, total_actual_ftds)
@@ -658,6 +717,10 @@ if nav == "🏠 Executive Overview":
     for c in ["target_ftds","ftds","ftd_gap"]:
         display[c] = display[c].map(number)
     display["ftd_attainment"] = display["ftd_attainment"].map(pct)
+    display["potential_conversion"] = display["potential_conversion"].map(pct)
+    display["approval_ratio"] = display["approval_ratio"].map(pct)
+    display["target_conversion"] = display["target_conversion"].map(pct)
+    display["cpl"] = display["cpl"].map(currency)
     for c in [
         "target_spend","marketing_cost","spend_gap","target_cpa","cpa","cpa_gap",
         "target_ndp","ndp","ndp_gap","target_gross_profitability",
@@ -667,7 +730,9 @@ if nav == "🏠 Executive Overview":
 
     display.columns = [
         "Country","Target FTDs","Actual FTDs","FTD Gap","Attainment",
-        "Target Spend","Actual Spend","Spend Gap","Target CPA","Actual CPA","CPA Gap",
+        "Target Spend","Actual Spend","Spend Gap","Target CPL",
+        "Potential Conversion","Approval Ratio","Target Conversion",
+        "Calculated Target CPA","Actual CPA","CPA Gap",
         "Target NDP","Actual NDP","NDP Gap","Target Gross Profitability",
         "Actual Gross Profitability","Gross Profitability Gap"
     ]
@@ -783,6 +848,46 @@ elif nav == "🎯 Target Planner":
             currency(target_gross_profitability_total),
             target_gross_profitability_total >= 0,
         )
+
+    st.subheader("Calculated Funnel Economics by Country")
+    economics_view = t[[
+        "country","target_ftds","potential_conversion","approval_ratio",
+        "target_conversion","cpl","target_cpa","target_leads",
+        "target_attempts","target_spend","target_roi",
+        "target_gross_profitability","target_profit"
+    ]].copy()
+
+    economics_view = economics_view.sort_values("target_ftds", ascending=False)
+    economics_view["potential_conversion"] = economics_view["potential_conversion"].map(pct)
+    economics_view["approval_ratio"] = economics_view["approval_ratio"].map(pct)
+    economics_view["target_conversion"] = economics_view["target_conversion"].map(pct)
+    economics_view["target_roi"] = economics_view["target_roi"].map(multiple)
+    for col in ["cpl","target_cpa","target_spend","target_gross_profitability","target_profit"]:
+        economics_view[col] = economics_view[col].map(currency)
+    for col in ["target_ftds","target_leads","target_attempts"]:
+        economics_view[col] = economics_view[col].map(number)
+
+    economics_view.columns = [
+        "Country","Target FTDs","Potential Conversion","Approval Ratio",
+        "Final Conversion","CPL","Calculated CPA","Required Leads",
+        "Required Attempts","Marketing Spend","ROI",
+        "Gross Marketing Profitability","Net Profit"
+    ]
+
+    st.dataframe(
+        economics_view,
+        use_container_width=True,
+        hide_index=True,
+        height=520,
+        column_config={
+            "Country": st.column_config.TextColumn("Country", pinned=True),
+        },
+    )
+
+    st.caption(
+        "Calculated CPA is locked by formula: "
+        "CPL ÷ (Potential Conversion × Approval Ratio)."
+    )
 
     fig = px.treemap(
         t[t["target_ftds"]>0],
@@ -917,6 +1022,29 @@ elif nav == "⚖️ Gap Analysis":
         )
         c5.metric("Countries Below Target", int((gap["ftd_gap"]<0).sum()))
 
+        total_target_leads_gap = gap["target_leads"].sum()
+        total_actual_leads_gap = gap["leads"].sum()
+        target_cpl_gap = safe_div(gap["target_spend"].sum(), total_target_leads_gap)
+        target_conversion_gap = safe_div(gap["target_ftds"].sum(), total_target_leads_gap)
+        target_cpa_gap_formula = safe_div(target_cpl_gap, target_conversion_gap)
+
+        actual_cpl_gap = safe_div(gap["marketing_cost"].sum(), total_actual_leads_gap)
+        actual_conversion_gap = safe_div(gap["ftds"].sum(), total_actual_leads_gap)
+        actual_cpa_gap_formula = safe_div(actual_cpl_gap, actual_conversion_gap)
+
+        g1, g2, g3, g4, g5, g6 = st.columns(6)
+        g1.metric("Target CPL", currency(target_cpl_gap))
+        g2.metric("Target Conversion", pct(target_conversion_gap))
+        g3.metric("Target CPA", currency(target_cpa_gap_formula))
+        g4.metric("Actual CPL", currency(actual_cpl_gap))
+        g5.metric("Actual Conversion", pct(actual_conversion_gap))
+        g6.metric(
+            "Actual CPA",
+            currency(actual_cpa_gap_formula),
+            delta=currency(actual_cpa_gap_formula-target_cpa_gap_formula),
+            delta_color="inverse",
+        )
+
         fig = px.bar(
             filtered,
             x="country",
@@ -992,6 +1120,16 @@ elif nav == "🌍 Country Drilldown":
             currency(actual_country_gross),
             actual_country_gross >= 0,
         )
+
+    st.markdown(
+        f"""
+        **Target CPA formula**
+
+        `{currency(trow["cpl"])} ÷ ({pct(trow["potential_conversion"])} × {pct(trow["approval_ratio"])}) = {currency(trow["target_cpa"])}`
+
+        Final target conversion: **{pct(trow["target_conversion"])}**
+        """
+    )
 
     if not country_actual.empty:
         fig = px.line(
@@ -1117,6 +1255,11 @@ The original report format is also supported automatically:
 - NDP$
     """)
 
+
+    st.info(
+        "CPA is never entered manually in the target model. "
+        "It is calculated from CPL, Potential Conversion, and Approval Ratio."
+    )
     if get_supabase():
         st.success("Supabase is configured. Plans and actuals can persist online.")
     else:

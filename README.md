@@ -75,3 +75,14 @@ Changing CPL, potential conversion, or approval ratio updates CPA, required lead
 ## Portfolio total row
 
 The Executive Overview country matrix includes a highlighted TOTAL PORTFOLIO row above all country rows. It sums target and actual performance and calculates weighted portfolio CPA and attainment.
+
+
+## Unified CPA formula
+
+Target CPA is calculated everywhere using:
+
+`Final Conversion = Potential Conversion × Approval Ratio`
+
+`CPA = CPL ÷ Final Conversion`
+
+The same calculation drives the Target Planner, Executive Overview, country totals, Gap Analysis, and Country Drilldown. CPA is not manually editable in the target model.
