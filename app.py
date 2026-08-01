@@ -377,6 +377,13 @@ def gap_df() -> pd.DataFrame:
     merged["ftd_gap"] = merged["ftds"] - merged["target_ftds"]
     merged["ftd_attainment"] = merged.apply(lambda r: safe_div(r["ftds"], r["target_ftds"]), axis=1)
     merged["lead_gap"] = merged["leads"] - merged["target_leads"]
+    merged["lead_attainment"] = merged.apply(
+        lambda r: safe_div(r["leads"], r["target_leads"]),
+        axis=1,
+    )
+    merged["leads_remaining"] = (
+        merged["target_leads"] - merged["leads"]
+    ).clip(lower=0)
     merged["spend_gap"] = merged["marketing_cost"] - merged["target_spend"]
     merged["target_cpa_formula"] = merged.apply(
         lambda r: safe_div(
@@ -588,6 +595,19 @@ if nav == "🏠 Executive Overview":
     c5.metric("Actual Spend", currency(actual_spend), delta=currency(actual_spend-target_spend))
     c6.metric("NDP Gap", currency(actual_ndp-target_ndp))
 
+    total_target_leads = target["target_leads"].sum()
+    total_actual_leads = actual["leads"].sum() if not actual.empty else 0
+    lead_attainment_total = safe_div(total_actual_leads, total_target_leads)
+
+    l1, l2, l3 = st.columns(3)
+    l1.metric("Target Leads", number(total_target_leads))
+    l2.metric(
+        "Actual Leads",
+        number(total_actual_leads),
+        delta=number(total_actual_leads - total_target_leads),
+    )
+    l3.metric("Lead Attainment", pct(lead_attainment_total))
+
     e1, e2, e3, e4, e5, e6 = st.columns(6)
     e1.metric("Target CPL", currency(weighted_target_cpl))
     e2.metric("Target Conversion", pct(weighted_target_conversion))
@@ -652,7 +672,8 @@ if nav == "🏠 Executive Overview":
     matrix = gap[[
         "country","target_ftds","ftds","ftd_gap","ftd_attainment",
         "target_spend","marketing_cost","spend_gap",
-        "target_leads","target_attempts",
+        "target_leads","leads","lead_gap","lead_attainment","leads_remaining",
+        "target_attempts",
         "cpl","potential_conversion","approval_ratio","target_conversion",
         "target_cpa","cpa","cpa_gap","target_ndp","ndp","ndp_gap",
         "target_gross_profitability","actual_gross_profitability",
@@ -671,6 +692,17 @@ if nav == "🏠 Executive Overview":
         "country": "TOTAL PORTFOLIO",
         "target_ftds": total_target_ftds,
         "ftds": total_actual_ftds,
+        "target_leads": matrix["target_leads"].sum(),
+        "leads": matrix["leads"].sum(),
+        "lead_gap": matrix["leads"].sum() - matrix["target_leads"].sum(),
+        "lead_attainment": safe_div(
+            matrix["leads"].sum(),
+            matrix["target_leads"].sum(),
+        ),
+        "leads_remaining": max(
+            matrix["target_leads"].sum() - matrix["leads"].sum(),
+            0,
+        ),
         "ftd_gap": total_actual_ftds - total_target_ftds,
         "ftd_attainment": safe_div(total_actual_ftds, total_target_ftds),
         "target_spend": total_target_spend,
@@ -715,9 +747,13 @@ if nav == "🏠 Executive Overview":
     matrix_with_total = pd.concat([total_row, matrix], ignore_index=True)
 
     display = matrix_with_total.copy()
-    for c in ["target_ftds","ftds","ftd_gap"]:
+    for c in [
+        "target_ftds","ftds","ftd_gap","target_leads","leads",
+        "lead_gap","leads_remaining"
+    ]:
         display[c] = display[c].map(number)
     display["ftd_attainment"] = display["ftd_attainment"].map(pct)
+    display["lead_attainment"] = display["lead_attainment"].map(pct)
     display["potential_conversion"] = display["potential_conversion"].map(pct)
     display["approval_ratio"] = display["approval_ratio"].map(pct)
     display["target_conversion"] = display["target_conversion"].map(pct)
@@ -733,6 +769,11 @@ if nav == "🏠 Executive Overview":
         "country": "Country",
         "target_ftds": "Target FTDs",
         "ftds": "Actual FTDs",
+        "target_leads": "Target Leads",
+        "leads": "Actual Leads",
+        "lead_gap": "Lead Gap",
+        "lead_attainment": "Lead Attainment",
+        "leads_remaining": "Leads Remaining",
         "ftd_gap": "FTD Gap",
         "ftd_attainment": "Attainment",
         "target_spend": "Target Spend",
@@ -755,7 +796,9 @@ if nav == "🏠 Executive Overview":
 
 
     display_order = [
-        "Country","Target FTDs","Actual FTDs","FTD Gap","Attainment",
+        "Country","Target Leads","Actual Leads","Lead Gap",
+        "Lead Attainment","Leads Remaining",
+        "Target FTDs","Actual FTDs","FTD Gap","Attainment",
         "Target Spend","Actual Spend","Spend Gap","Target CPL",
         "Potential Conversion","Approval Ratio","Target Conversion",
         "Calculated Target CPA","Actual CPA","CPA Gap",
@@ -860,12 +903,13 @@ elif nav == "🎯 Target Planner":
         target_ndp_total - target_spend_total
     )
 
-    c1,c2,c3,c4,c5 = st.columns(5)
-    c1.metric("Target FTDs", number(t["target_ftds"].sum()))
-    c2.metric("Required Leads", number(t["target_leads"].sum()))
-    c3.metric("Marketing Spend", currency(target_spend_total))
-    c4.metric("Target NDP", currency(target_ndp_total))
-    c5.metric("Target Profit", currency(t["target_profit"].sum()))
+    c1,c2,c3,c4,c5,c6 = st.columns(6)
+    c1.metric("Target Leads", number(t["target_leads"].sum()))
+    c2.metric("Target FTDs", number(t["target_ftds"].sum()))
+    c3.metric("Required Attempts", number(t["target_attempts"].sum()))
+    c4.metric("Marketing Spend", currency(target_spend_total))
+    c5.metric("Target NDP", currency(target_ndp_total))
+    c6.metric("Target Profit", currency(t["target_profit"].sum()))
 
     p1, p2 = st.columns(2)
     with p1:
@@ -927,6 +971,19 @@ elif nav == "🎯 Target Planner":
     )
     fig.update_layout(height=520)
     st.plotly_chart(fig, use_container_width=True)
+
+    lead_chart = px.bar(
+        t.head(15).sort_values("target_leads"),
+        x="target_leads",
+        y="country",
+        orientation="h",
+        title="Top 15 Countries by Required Target Leads",
+        labels={"target_leads": "Required Leads", "country": ""},
+        color="target_conversion",
+        color_continuous_scale="Blues",
+    )
+    lead_chart.update_layout(height=520)
+    st.plotly_chart(lead_chart, use_container_width=True)
 
     st.subheader("CPA Sensitivity Heatmap")
     selected_plan_row = next(
@@ -1040,15 +1097,16 @@ elif nav == "⚖️ Gap Analysis":
             filtered = filtered[filtered["ftd_gap"] < 0]
         filtered = filtered.sort_values("ftd_gap").head(int(top_n))
 
-        c1,c2,c3,c4,c5 = st.columns(5)
-        c1.metric("Total FTD Gap", number(gap["ftd_gap"].sum()))
-        c2.metric("Spend Gap", currency(gap["spend_gap"].sum()))
-        c3.metric("NDP Gap", currency(gap["ndp_gap"].sum()))
-        c4.metric(
+        c1,c2,c3,c4,c5,c6 = st.columns(6)
+        c1.metric("Total Lead Gap", number(gap["lead_gap"].sum()))
+        c2.metric("Total FTD Gap", number(gap["ftd_gap"].sum()))
+        c3.metric("Spend Gap", currency(gap["spend_gap"].sum()))
+        c4.metric("NDP Gap", currency(gap["ndp_gap"].sum()))
+        c5.metric(
             "Gross Profitability Gap",
             currency(gap["gross_profitability_gap"].sum()),
         )
-        c5.metric("Countries Below Target", int((gap["ftd_gap"]<0).sum()))
+        c6.metric("Countries Below Target", int((gap["ftd_gap"]<0).sum()))
 
         total_target_leads_gap = gap["target_leads"].sum()
         total_actual_leads_gap = gap["leads"].sum()
@@ -1072,6 +1130,16 @@ elif nav == "⚖️ Gap Analysis":
             delta=currency(actual_cpa_gap_formula-target_cpa_gap_formula),
             delta_color="inverse",
         )
+
+        lead_fig = px.bar(
+            filtered,
+            x="country",
+            y=["target_leads","leads"],
+            barmode="group",
+            title="Target vs Actual Leads",
+            labels={"value":"Leads","variable":"Series"},
+        )
+        st.plotly_chart(lead_fig, use_container_width=True)
 
         fig = px.bar(
             filtered,
@@ -1119,12 +1187,34 @@ elif nav == "🌍 Country Drilldown":
         arow = country_actual.iloc[-1]
 
     c1,c2,c3,c4,c5,c6 = st.columns(6)
-    c1.metric("Target FTDs", number(trow["target_ftds"]))
-    c2.metric("Actual FTDs", number(arow["ftds"]), delta=number(arow["ftds"]-trow["target_ftds"]))
-    c3.metric("Target CPA", currency(trow["target_cpa"]))
-    c4.metric("Actual CPA", currency(arow["cpa"]), delta=currency(arow["cpa"]-trow["target_cpa"]))
-    c5.metric("Target Spend", currency(trow["target_spend"]))
-    c6.metric("Actual Spend", currency(arow["marketing_cost"]), delta=currency(arow["marketing_cost"]-trow["target_spend"]))
+    c1.metric("Target Leads", number(trow["target_leads"]))
+    c2.metric(
+        "Actual Leads",
+        number(arow["leads"]),
+        delta=number(arow["leads"]-trow["target_leads"]),
+    )
+    c3.metric("Target FTDs", number(trow["target_ftds"]))
+    c4.metric(
+        "Actual FTDs",
+        number(arow["ftds"]),
+        delta=number(arow["ftds"]-trow["target_ftds"]),
+    )
+    c5.metric("Target CPA", currency(trow["target_cpa"]))
+    c6.metric(
+        "Actual CPA",
+        currency(arow["cpa"]),
+        delta=currency(arow["cpa"]-trow["target_cpa"]),
+        delta_color="inverse",
+    )
+
+    s1, s2 = st.columns(2)
+    s1.metric("Target Spend", currency(trow["target_spend"]))
+    s2.metric(
+        "Actual Spend",
+        currency(arow["marketing_cost"]),
+        delta=currency(arow["marketing_cost"]-trow["target_spend"]),
+        delta_color="inverse",
+    )
 
     target_country_roi = safe_div(trow["target_ndp"], trow["target_spend"])
     actual_country_roi = safe_div(arow["ndp"], arow["marketing_cost"])
@@ -1208,7 +1298,13 @@ elif nav == "🧪 Plan Comparison":
                 summary["target_ndp"] - summary["target_spend"]
             )
             st.dataframe(summary, use_container_width=True, hide_index=True)
-            fig = px.bar(summary, x="plan", y=["target_ftds","target_spend","target_profit"], barmode="group")
+            fig = px.bar(
+                summary,
+                x="plan",
+                y=["target_leads","target_ftds","target_spend","target_profit"],
+                barmode="group",
+                title="Plan Comparison: Leads, FTDs, Spend and Profit",
+            )
             st.plotly_chart(fig, use_container_width=True)
 
 elif nav == "📤 Data Hub":
@@ -1288,6 +1384,15 @@ The original report format is also supported automatically:
         "CPA is never entered manually in the target model. "
         "It is calculated from CPL, Potential Conversion, and Approval Ratio."
     )
+
+    st.markdown("""
+### Leads formulas
+
+- **Required Leads** = Target FTDs ÷ (Potential Conversion × Approval Ratio)
+- **Lead Gap** = Actual Leads − Target Leads
+- **Lead Attainment** = Actual Leads ÷ Target Leads
+- **Leads Remaining** = max(Target Leads − Actual Leads, 0)
+    """)
     if get_supabase():
         st.success("Supabase is configured. Plans and actuals can persist online.")
     else:

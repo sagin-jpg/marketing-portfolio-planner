@@ -96,3 +96,13 @@ Fixed Executive matrix KeyError by including target leads and target attempts in
 ## Hotfix v2
 
 Replaced fragile dataframe column assignment with explicit rename mapping and ordered column selection.
+
+
+## Leads integration
+
+Leads are included across Executive Overview, Target Planner, Gap Analysis, Country Drilldown, plan comparison, and portfolio totals.
+
+- Required Leads = Target FTDs / (Potential Conversion × Approval Ratio)
+- Lead Gap = Actual Leads - Target Leads
+- Lead Attainment = Actual Leads / Target Leads
+- Leads Remaining = max(Target Leads - Actual Leads, 0)
