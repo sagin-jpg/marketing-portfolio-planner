@@ -1,79 +1,64 @@
-# Marketing Portfolio Planner
+# FTD Target Control Center
 
-A multi-country Streamlit application generated from the original June 2026 marketing report.
+A Power BI–style Streamlit application for target FTD planning, daily actual uploads, and target-vs-reality gap control.
 
-## Features
+## Core workflow
 
-- All countries from the original Excel report
-- Country dropdown
-- Separate planning assumptions per country
-- Portfolio dashboard sorted by calculated leads, highest first
-- Marketing budget, target FTD, and leads driver modes
-- Potential conversion / deposit attempt rate
-- Approval ratio
-- CPL, PV per FTD, PSP fees, variable costs, and fixed costs
-- Live CPA, ROI, net deposits, and net marketing profit
-- 20-level approval sensitivity table
-- CSV and JSON exports
-- Optional password protection
-- Optional Supabase persistence for saved shared online data
+1. Create a monthly target plan.
+2. Enter target FTDs by country.
+3. Save the plan.
+4. Upload daily actual files.
+5. Review Executive Overview and Gap Analysis.
+6. Drill into individual countries.
+7. Compare saved plans.
 
-## Deploy to Streamlit Community Cloud
+## Supported actual upload formats
 
-Upload these files and folders to the root of your GitHub repository:
+`.xlsx`, `.xls`, or `.csv`
 
-- `app.py`
-- `baseline_countries.json`
-- `requirements.txt`
-- `supabase_schema.sql`
-- `.streamlit/config.toml`
-- `.streamlit/secrets.toml.example`
+Recommended columns:
 
-Deploy using:
+- Country
+- Leads
+- FTDs
+- Marketing Cost
+- NDP
 
-- Repository: `YOUR-GITHUB-USERNAME/YOUR-REPOSITORY`
+Optional:
+
+- Date
+- Conversion Rate
+- CPL
+- CPA
+- ROI
+
+The original report structure is also supported:
+`Row Labels, Leads, FTD #, CR %, COST, CPL, Avg CPA, ROI, NDP$`
+
+## Deploy
+
+Upload all files to GitHub, then deploy with Streamlit Cloud using:
+
 - Branch: `main`
 - Main file path: `app.py`
 
-## Permanent online saving with Supabase
+## Permanent saving
 
-Without a database, Streamlit Cloud may erase local changes when the app restarts.
+Run `supabase_schema.sql` in Supabase SQL Editor.
 
-1. Create a free Supabase project.
-2. Open **SQL Editor**.
-3. Paste and run `supabase_schema.sql`.
-4. In Supabase, open **Project Settings → API**.
-5. Copy:
-   - Project URL
-   - anon/public API key
-6. Open Streamlit Cloud:
-   - Your app → Settings → Secrets
-7. Paste:
+Then add Streamlit secrets:
 
 ```toml
-SUPABASE_URL = "https://YOUR-PROJECT.supabase.co"
-SUPABASE_KEY = "YOUR-ANON-KEY"
-APP_PASSWORD = "optional-password"
+SUPABASE_URL="https://YOUR-PROJECT.supabase.co"
+SUPABASE_KEY="YOUR-ANON-KEY"
+APP_PASSWORD="optional-password"
 ```
 
-8. Reboot the Streamlit app.
-9. Use **Save current country** or **Save all countries**.
 
-## Local run
+## CPA funnel linkage
 
-```bash
-python3 -m pip install -r requirements.txt
-streamlit run app.py
-```
+CPA is calculated as:
 
-Local changes are saved to `country_plans.local.json` when Supabase is not configured.
+`CPA = CPL / (Potential Conversion × Approval Ratio)`
 
-
-## Navigation fix
-
-This build adds visible icon-based top navigation and explicit tab label styling.
-
-
-## Navigation v2
-
-The app now uses an always-visible horizontal radio navigation instead of Streamlit tabs.
+Changing CPL, potential conversion, or approval ratio updates CPA, required leads, marketing spend, ROI, and target profit.

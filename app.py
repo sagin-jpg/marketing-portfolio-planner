@@ -1,13 +1,16 @@
 
 from __future__ import annotations
 
+import io
 import json
 import math
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 try:
@@ -16,17 +19,39 @@ except Exception:
     create_client = None
 
 st.set_page_config(
-    page_title="Marketing Portfolio Planner",
-    page_icon="📊",
+    page_title="FTD Target Control Center",
+    page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-BASELINE_PATH = Path(__file__).with_name("baseline_countries.json")
-LOCAL_STORE_PATH = Path(__file__).with_name("country_plans.local.json")
-TABLE_NAME = "marketing_country_plans"
+BASE_DIR = Path(__file__).parent
+BASELINE_PATH = BASE_DIR / "baseline_countries.json"
+LOCAL_TARGETS = BASE_DIR / "saved_target_plans.local.json"
+LOCAL_ACTUALS = BASE_DIR / "saved_actuals.local.json"
 
-DRIVERS = ["Marketing Budget", "Target FTDs", "Leads Purchased"]
+TARGET_TABLE = "ftd_target_plans"
+ACTUAL_TABLE = "ftd_actual_snapshots"
+
+NAV_ITEMS = [
+    "🏠 Executive Overview",
+    "🎯 Target Planner",
+    "📊 Actual Data",
+    "⚖️ Gap Analysis",
+    "🌍 Country Drilldown",
+    "🧪 Plan Comparison",
+    "📤 Data Hub",
+    "⚙️ Settings",
+]
+
+THEME = {
+    "blue": "#2563EB",
+    "green": "#16A34A",
+    "red": "#DC2626",
+    "amber": "#D97706",
+    "purple": "#7C3AED",
+    "slate": "#475569",
+}
 
 
 def safe_div(a: float, b: float) -> float:
@@ -34,15 +59,15 @@ def safe_div(a: float, b: float) -> float:
 
 
 def currency(x: float) -> str:
-    return f"${x:,.2f}"
+    return f"${x:,.0f}"
 
 
-def integer(x: float) -> str:
+def number(x: float) -> str:
     return f"{x:,.0f}"
 
 
 def pct(x: float) -> str:
-    return f"{x * 100:,.2f}%"
+    return f"{x*100:,.1f}%"
 
 
 def multiple(x: float) -> str:
@@ -50,7 +75,7 @@ def multiple(x: float) -> str:
 
 
 @st.cache_data
-def load_baseline() -> list[dict[str, Any]]:
+def baseline_rows() -> list[dict[str, Any]]:
     return json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
 
 
@@ -58,679 +83,875 @@ def get_supabase():
     if create_client is None:
         return None
     try:
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_KEY"]
-        return create_client(url, key)
+        return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
     except Exception:
         return None
 
 
-def load_plans() -> tuple[list[dict[str, Any]], str]:
-    baseline = load_baseline()
-    supabase = get_supabase()
+def plan_defaults(plan_name: str, month: str) -> list[dict[str, Any]]:
+    rows = []
+    for base in baseline_rows():
+        row = dict(base)
+        row.update({
+            "plan_name": plan_name,
+            "plan_month": month,
+            "target_ftds": base["default_target_ftds"],
+        })
+        rows.append(row)
+    return rows
 
-    if supabase is not None:
+
+def normalize_plan_row(row: dict[str, Any]) -> dict[str, Any]:
+    defaults = {
+        "target_ftds": 0.0,
+        "potential_conversion": 0.0,
+        "approval_ratio": 0.5,
+        "cpl": 0.0,
+        "pv_per_ftd": 1600.0,
+        "psp_fee": 0.05,
+        "variable_cost_per_ftd": 0.0,
+        "fixed_cost": 0.0,
+    }
+    result = dict(row)
+    for k, v in defaults.items():
+        result[k] = float(result.get(k, v) or 0)
+    return result
+
+
+def load_target_plans() -> dict[str, list[dict[str, Any]]]:
+    supa = get_supabase()
+    if supa is not None:
         try:
-            response = supabase.table(TABLE_NAME).select("country,payload").execute()
-            rows = response.data or []
-            saved = {row["country"]: row["payload"] for row in rows}
-            merged = []
-            for base in baseline:
-                plan = dict(base)
-                plan.update(saved.get(base["country"], {}))
-                merged.append(plan)
-            return merged, "Supabase"
+            rows = supa.table(TARGET_TABLE).select("plan_key,payload").execute().data or []
+            if rows:
+                return {r["plan_key"]: r["payload"] for r in rows}
         except Exception as exc:
-            st.warning(f"Supabase is configured but could not be read: {exc}")
+            st.warning(f"Could not read target plans from Supabase: {exc}")
 
-    if LOCAL_STORE_PATH.exists():
+    if LOCAL_TARGETS.exists():
         try:
-            saved_rows = json.loads(LOCAL_STORE_PATH.read_text(encoding="utf-8"))
-            saved = {row["country"]: row for row in saved_rows}
-            merged = []
-            for base in baseline:
-                plan = dict(base)
-                plan.update(saved.get(base["country"], {}))
-                merged.append(plan)
-            return merged, "Local file"
+            return json.loads(LOCAL_TARGETS.read_text(encoding="utf-8"))
         except Exception:
             pass
+    return {}
 
-    return baseline, "Session only"
 
-
-def save_plan(plan: dict[str, Any]) -> tuple[bool, str]:
-    supabase = get_supabase()
-    payload = {k: v for k, v in plan.items() if k != "country"}
-
-    if supabase is not None:
+def save_target_plan(plan_key: str, payload: list[dict[str, Any]]) -> tuple[bool, str]:
+    supa = get_supabase()
+    if supa is not None:
         try:
-            row = {
-                "country": plan["country"],
+            supa.table(TARGET_TABLE).upsert({
+                "plan_key": plan_key,
                 "payload": payload,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            supabase.table(TABLE_NAME).upsert(row, on_conflict="country").execute()
-            return True, "Saved to Supabase"
+            }, on_conflict="plan_key").execute()
+            return True, "Plan saved to Supabase"
         except Exception as exc:
             return False, f"Supabase save failed: {exc}"
 
     try:
-        LOCAL_STORE_PATH.write_text(
-            json.dumps(st.session_state.plans, indent=2),
-            encoding="utf-8",
-        )
-        return True, "Saved locally"
+        plans = st.session_state.saved_plans
+        plans[plan_key] = payload
+        LOCAL_TARGETS.write_text(json.dumps(plans, indent=2), encoding="utf-8")
+        return True, "Plan saved locally"
     except Exception:
-        return False, "This hosted session has no permanent database configured."
+        return False, "No permanent storage configured"
 
 
-def save_all() -> tuple[int, list[str]]:
-    ok_count = 0
-    errors = []
-    for plan in st.session_state.plans:
-        ok, msg = save_plan(plan)
-        if ok:
-            ok_count += 1
-        else:
-            errors.append(f'{plan["country"]}: {msg}')
-    return ok_count, errors
+def delete_target_plan(plan_key: str) -> tuple[bool, str]:
+    supa = get_supabase()
+    if supa is not None:
+        try:
+            supa.table(TARGET_TABLE).delete().eq("plan_key", plan_key).execute()
+            return True, "Deleted"
+        except Exception as exc:
+            return False, str(exc)
+
+    try:
+        st.session_state.saved_plans.pop(plan_key, None)
+        LOCAL_TARGETS.write_text(json.dumps(st.session_state.saved_plans, indent=2), encoding="utf-8")
+        return True, "Deleted"
+    except Exception:
+        return False, "Delete failed"
 
 
-def calculate(plan: dict[str, Any]) -> dict[str, float]:
-    driver = plan["driver"]
-    driver_value = max(0.0, float(plan["driver_value"]))
-    cpl = max(0.0, float(plan["cpl"]))
-    potential = min(max(float(plan["potential_conversion"]), 0.0), 1.0)
-    approval = min(max(float(plan["approval_ratio"]), 0.0), 1.0)
-    pv = max(0.0, float(plan["pv_per_ftd"]))
-    psp_fee = min(max(float(plan["psp_fee"]), 0.0), 1.0)
-    variable_cost = max(0.0, float(plan["variable_cost_per_ftd"]))
-    fixed_cost = max(0.0, float(plan["fixed_monthly_cost"]))
+def load_actuals() -> list[dict[str, Any]]:
+    supa = get_supabase()
+    if supa is not None:
+        try:
+            rows = supa.table(ACTUAL_TABLE).select("*").execute().data or []
+            return rows
+        except Exception as exc:
+            st.warning(f"Could not read actual data from Supabase: {exc}")
 
+    if LOCAL_ACTUALS.exists():
+        try:
+            return json.loads(LOCAL_ACTUALS.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return []
+
+
+def save_actual_rows(rows: list[dict[str, Any]]) -> tuple[bool, str]:
+    supa = get_supabase()
+    if supa is not None:
+        try:
+            supa.table(ACTUAL_TABLE).upsert(
+                rows,
+                on_conflict="snapshot_date,country",
+            ).execute()
+            return True, f"Saved {len(rows)} actual rows to Supabase"
+        except Exception as exc:
+            return False, f"Supabase save failed: {exc}"
+
+    try:
+        existing = {(r["snapshot_date"], r["country"]): r for r in st.session_state.actual_rows}
+        for row in rows:
+            existing[(row["snapshot_date"], row["country"])] = row
+        st.session_state.actual_rows = list(existing.values())
+        LOCAL_ACTUALS.write_text(json.dumps(st.session_state.actual_rows, indent=2), encoding="utf-8")
+        return True, f"Saved {len(rows)} actual rows locally"
+    except Exception:
+        return False, "No permanent storage configured"
+
+
+def calculate_target(row: dict[str, Any]) -> dict[str, float]:
+    r = normalize_plan_row(row)
+    target_ftds = max(0.0, r["target_ftds"])
+    potential = min(max(r["potential_conversion"], 0.0), 1.0)
+    approval = min(max(r["approval_ratio"], 0.0), 1.0)
+    # Final lead-to-FTD conversion is driven by both deposit intent and payment approval.
+    # CPA therefore moves automatically with CPL, potential conversion, and approval ratio.
     conversion = potential * approval
-
-    if driver == "Marketing Budget":
-        spend = driver_value
-        leads = safe_div(spend, cpl)
-        attempts = leads * potential
-        ftds = attempts * approval
-    elif driver == "Target FTDs":
-        ftds = driver_value
-        attempts = safe_div(ftds, approval)
-        leads = safe_div(attempts, potential)
-        spend = leads * cpl
-    else:
-        leads = driver_value
-        spend = leads * cpl
-        attempts = leads * potential
-        ftds = attempts * approval
-
-    cpa = safe_div(spend, ftds)
-    net_deposits = ftds * pv
-    roi = safe_div(net_deposits, spend)
-    psp_cost = net_deposits * psp_fee
-    variable_total = ftds * variable_cost
-    net_profit = net_deposits - spend - psp_cost - variable_total - fixed_cost
-    profit_per_ftd = safe_div(net_profit, ftds)
-    profit_margin = safe_div(net_profit, net_deposits)
-    break_even_cpa = pv * (1 - psp_fee) - variable_cost
-    break_even_cpl = break_even_cpa * conversion
-    max_profitable_spend = net_deposits - psp_cost - variable_total - fixed_cost
-    budget_headroom = max_profitable_spend - spend
-
+    attempts = safe_div(target_ftds, approval)
+    leads = safe_div(target_ftds, conversion)
+    spend = leads * max(0.0, r["cpl"])
+    cpa = safe_div(max(0.0, r["cpl"]), conversion)
+    ndp = target_ftds * max(0.0, r["pv_per_ftd"])
+    roi = safe_div(ndp, spend)
+    psp = ndp * min(max(r["psp_fee"], 0.0), 1.0)
+    variable = target_ftds * max(0.0, r["variable_cost_per_ftd"])
+    profit = ndp - spend - psp - variable - max(0.0, r["fixed_cost"])
     return {
-        "ftd_conversion": conversion,
-        "marketing_spend": spend,
-        "leads": leads,
-        "deposit_attempts": attempts,
-        "ftds": ftds,
-        "cpa": cpa,
-        "net_deposits": net_deposits,
-        "roi": roi,
-        "psp_cost": psp_cost,
-        "variable_cost_total": variable_total,
-        "net_profit": net_profit,
-        "profit_per_ftd": profit_per_ftd,
-        "profit_margin": profit_margin,
-        "break_even_cpa": break_even_cpa,
-        "break_even_cpl": break_even_cpl,
-        "max_profitable_spend": max_profitable_spend,
-        "budget_headroom": budget_headroom,
+        "target_ftds": target_ftds,
+        "target_leads": leads,
+        "target_attempts": attempts,
+        "target_conversion": conversion,
+        "target_spend": spend,
+        "target_cpa": cpa,
+        "target_ndp": ndp,
+        "target_roi": roi,
+        "target_profit": profit,
     }
 
 
-def password_gate() -> None:
+def parse_uploaded_file(uploaded, snapshot_date: date) -> pd.DataFrame:
+    name = uploaded.name.lower()
+    if name.endswith(".xlsx") or name.endswith(".xls"):
+        raw = pd.read_excel(uploaded)
+    elif name.endswith(".csv"):
+        raw = pd.read_csv(uploaded)
+    else:
+        raise ValueError("Use .xlsx or .csv")
+
+    raw.columns = [str(c).strip().lower() for c in raw.columns]
+    aliases = {
+        "row labels": "country",
+        "country": "country",
+        "leads": "leads",
+        "ftd #": "ftds",
+        "ftds": "ftds",
+        "ftd": "ftds",
+        "cr %": "conversion_rate",
+        "conversion": "conversion_rate",
+        "conversion_rate": "conversion_rate",
+        "cost": "marketing_cost",
+        "marketing cost": "marketing_cost",
+        "marketing_cost": "marketing_cost",
+        "cpl": "cpl",
+        "avg cpa": "cpa",
+        "cpa": "cpa",
+        "roi": "roi",
+        "ndp$": "ndp",
+        "ndp": "ndp",
+        "net deposits": "ndp",
+        "date": "snapshot_date",
+        "snapshot_date": "snapshot_date",
+    }
+    raw = raw.rename(columns={c: aliases.get(c, c) for c in raw.columns})
+
+    if "country" not in raw.columns:
+        raise ValueError("The file must contain a Country or Row Labels column.")
+
+    for required in ["leads", "ftds", "marketing_cost", "ndp"]:
+        if required not in raw.columns:
+            raw[required] = 0.0
+
+    if "conversion_rate" not in raw.columns:
+        raw["conversion_rate"] = raw.apply(lambda x: safe_div(float(x["ftds"]), float(x["leads"])), axis=1)
+    if "cpl" not in raw.columns:
+        raw["cpl"] = raw.apply(lambda x: safe_div(float(x["marketing_cost"]), float(x["leads"])), axis=1)
+    if "cpa" not in raw.columns:
+        raw["cpa"] = raw.apply(lambda x: safe_div(float(x["marketing_cost"]), float(x["ftds"])), axis=1)
+    if "roi" not in raw.columns:
+        raw["roi"] = raw.apply(lambda x: safe_div(float(x["ndp"]), float(x["marketing_cost"])), axis=1)
+
+    if "snapshot_date" not in raw.columns:
+        raw["snapshot_date"] = snapshot_date.isoformat()
+    else:
+        raw["snapshot_date"] = pd.to_datetime(raw["snapshot_date"]).dt.date.astype(str)
+
+    raw["country"] = raw["country"].astype(str).str.strip()
+    raw = raw[raw["country"].ne("")]
+    raw = raw[~raw["country"].str.lower().isin(["grand total", "total"])]
+
+    numeric_cols = ["leads","ftds","conversion_rate","marketing_cost","cpl","cpa","roi","ndp"]
+    for c in numeric_cols:
+        raw[c] = pd.to_numeric(raw[c], errors="coerce").fillna(0.0)
+
+    return raw[["snapshot_date","country","leads","ftds","conversion_rate","marketing_cost","cpl","cpa","roi","ndp"]]
+
+
+def current_plan_rows() -> list[dict[str, Any]]:
+    return st.session_state.current_plan
+
+
+def target_df() -> pd.DataFrame:
+    rows = []
+    for row in current_plan_rows():
+        calc = calculate_target(row)
+        rows.append({
+            "country": row["country"],
+            **calc,
+            "potential_conversion": row["potential_conversion"],
+            "approval_ratio": row["approval_ratio"],
+            "cpl": row["cpl"],
+            "pv_per_ftd": row["pv_per_ftd"],
+            "psp_fee": row["psp_fee"],
+        })
+    return pd.DataFrame(rows)
+
+
+def actual_df() -> pd.DataFrame:
+    if not st.session_state.actual_rows:
+        return pd.DataFrame(columns=["snapshot_date","country","leads","ftds","conversion_rate","marketing_cost","cpl","cpa","roi","ndp"])
+    df = pd.DataFrame(st.session_state.actual_rows)
+    df["snapshot_date"] = pd.to_datetime(df["snapshot_date"])
+    return df
+
+
+def latest_actual_by_country() -> pd.DataFrame:
+    df = actual_df()
+    if df.empty:
+        return df
+    idx = df.groupby("country")["snapshot_date"].idxmax()
+    return df.loc[idx].copy()
+
+
+def gap_df() -> pd.DataFrame:
+    t = target_df()
+    a = latest_actual_by_country()
+    merged = t.merge(a, on="country", how="left", suffixes=("_target", "_actual"))
+    for col in ["leads","ftds","conversion_rate","marketing_cost","cpl","cpa","roi","ndp"]:
+        if col not in merged:
+            merged[col] = 0.0
+        merged[col] = merged[col].fillna(0.0)
+
+    merged["ftd_gap"] = merged["ftds"] - merged["target_ftds"]
+    merged["ftd_attainment"] = merged.apply(lambda r: safe_div(r["ftds"], r["target_ftds"]), axis=1)
+    merged["lead_gap"] = merged["leads"] - merged["target_leads"]
+    merged["spend_gap"] = merged["marketing_cost"] - merged["target_spend"]
+    merged["cpa_gap"] = merged["cpa"] - merged["target_cpa"]
+    merged["ndp_gap"] = merged["ndp"] - merged["target_ndp"]
+    return merged
+
+
+def password_gate():
     password = st.secrets.get("APP_PASSWORD", "")
     if not password:
         return
-
     if st.session_state.get("authenticated"):
         return
-
-    st.title("Marketing Portfolio Planner")
+    st.title("FTD Target Control Center")
     entered = st.text_input("Password", type="password")
-    if st.button("Open app", type="primary"):
+    if st.button("Open", type="primary"):
         if entered == password:
             st.session_state.authenticated = True
             st.rerun()
         else:
-            st.error("Incorrect password.")
+            st.error("Incorrect password")
     st.stop()
 
 
 password_gate()
 
-if "plans" not in st.session_state:
-    st.session_state.plans, st.session_state.storage_mode = load_plans()
+if "saved_plans" not in st.session_state:
+    st.session_state.saved_plans = load_target_plans()
+if "actual_rows" not in st.session_state:
+    st.session_state.actual_rows = load_actuals()
+if "current_plan_key" not in st.session_state:
+    st.session_state.current_plan_key = "Base Plan | 2026-06"
+if "current_plan" not in st.session_state:
+    if st.session_state.current_plan_key in st.session_state.saved_plans:
+        st.session_state.current_plan = st.session_state.saved_plans[st.session_state.current_plan_key]
+    else:
+        st.session_state.current_plan = plan_defaults("Base Plan", "2026-06")
 
-if "selected_country" not in st.session_state:
-    st.session_state.selected_country = st.session_state.plans[0]["country"]
-
-
-def plan_index(country: str) -> int:
-    return next(i for i, p in enumerate(st.session_state.plans) if p["country"] == country)
-
-
-def update_plan(country: str, field: str, value: Any) -> None:
-    idx = plan_index(country)
-    st.session_state.plans[idx][field] = value
-
-
-def reset_country(country: str) -> None:
-    baseline = {p["country"]: p for p in load_baseline()}
-    idx = plan_index(country)
-    st.session_state.plans[idx] = dict(baseline[country])
-
-
-def portfolio_dataframe() -> pd.DataFrame:
-    rows = []
-    for plan in st.session_state.plans:
-        calc = calculate(plan)
-        rows.append({
-            "Country": plan["country"],
-            "Leads": calc["leads"],
-            "Deposit Attempts": calc["deposit_attempts"],
-            "FTDs": calc["ftds"],
-            "Potential Conversion": plan["potential_conversion"],
-            "Approval Ratio": plan["approval_ratio"],
-            "FTD Conversion": calc["ftd_conversion"],
-            "Marketing Spend": calc["marketing_spend"],
-            "CPA": calc["cpa"],
-            "PV / FTD": plan["pv_per_ftd"],
-            "Net Deposits": calc["net_deposits"],
-            "ROI": calc["roi"],
-            "PSP Cost": calc["psp_cost"],
-            "Net Profit": calc["net_profit"],
-            "Profit Margin": calc["profit_margin"],
-        })
-    return pd.DataFrame(rows).sort_values(
-        ["Leads", "Country"], ascending=[False, True]
-    ).reset_index(drop=True)
-
-
-st.markdown(
-    """
-    <style>
-      .block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
-      div[data-testid="stMetric"] {
-        border: 1px solid rgba(128,128,128,.25);
-        border-radius: 12px;
-        padding: 12px 14px;
-        background: rgba(128,128,128,.04);
-      }
-      .small-note {color: #777; font-size: .85rem;}
-
-      /* Always-visible page navigation */
-      div[role="radiogroup"] {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.55rem;
-        margin-bottom: 0.4rem;
-      }
-
-      div[role="radiogroup"] label {
-        border: 1px solid rgba(128,128,128,.30);
-        border-radius: 10px;
-        padding: 0.55rem 0.85rem;
-        background: rgba(128,128,128,.05);
-        min-height: 42px;
-        align-items: center;
-      }
-
-      div[role="radiogroup"] label p {
-        color: #374151 !important;
-        font-weight: 650 !important;
-        opacity: 1 !important;
-      }
-
-      div[role="radiogroup"] label:has(input:checked) {
-        border-color: #2563EB;
-        background: rgba(37,99,235,.10);
-      }
-
-      div[role="radiogroup"] label:has(input:checked) p {
-        color: #2563EB !important;
-      }
-
-      @media (prefers-color-scheme: dark) {
-        div[role="radiogroup"] label p {
-          color: #E5E7EB !important;
-        }
-        div[role="radiogroup"] label:has(input:checked) p {
-          color: #60A5FA !important;
-        }
-      }
-
-      /* Keep Streamlit tab labels visible across light/dark/browser themes */
-      div[data-baseweb="tab-list"] {
-        gap: 0.35rem;
-        border-bottom: 1px solid rgba(128,128,128,.25);
-        margin-bottom: 0.75rem;
-      }
-
-      button[data-baseweb="tab"] {
-        min-height: 48px;
-        padding: 0.65rem 1rem;
-        border-radius: 10px 10px 0 0;
-      }
-
-      button[data-baseweb="tab"] p,
-      button[data-baseweb="tab"] span {
-        color: #374151 !important;
-        font-weight: 650 !important;
-        opacity: 1 !important;
-      }
-
-      button[data-baseweb="tab"][aria-selected="true"] {
-        background: rgba(37, 99, 235, 0.08);
-      }
-
-      button[data-baseweb="tab"][aria-selected="true"] p,
-      button[data-baseweb="tab"][aria-selected="true"] span {
-        color: #2563EB !important;
-      }
-
-      @media (prefers-color-scheme: dark) {
-        button[data-baseweb="tab"] p,
-        button[data-baseweb="tab"] span {
-          color: #E5E7EB !important;
-        }
-
-        button[data-baseweb="tab"][aria-selected="true"] p,
-        button[data-baseweb="tab"][aria-selected="true"] span {
-          color: #60A5FA !important;
-        }
-      }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown("""
+<style>
+.block-container {padding-top: 1rem; padding-bottom: 2rem;}
+div[data-testid="stMetric"] {
+  border: 1px solid rgba(100,116,139,.22);
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.96));
+  box-shadow: 0 8px 24px rgba(15,23,42,.04);
+}
+div[role="radiogroup"] {display:flex; flex-wrap:wrap; gap:.45rem;}
+div[role="radiogroup"] label {
+  border:1px solid rgba(100,116,139,.25);
+  border-radius:10px;
+  padding:.45rem .75rem;
+  background:rgba(148,163,184,.06);
+}
+div[role="radiogroup"] label p {font-weight:650!important; color:#334155!important;}
+div[role="radiogroup"] label:has(input:checked) {
+  background:rgba(37,99,235,.10);
+  border-color:#2563EB;
+}
+div[role="radiogroup"] label:has(input:checked) p {color:#2563EB!important;}
+</style>
+""", unsafe_allow_html=True)
 
 with st.sidebar:
-    st.title("Portfolio Controls")
-    countries = sorted(p["country"] for p in st.session_state.plans)
-    selected = st.selectbox(
-        "Country",
-        countries,
-        index=countries.index(st.session_state.selected_country),
-    )
-    st.session_state.selected_country = selected
+    st.title("🎯 FTD Control Center")
 
-    storage_mode = st.session_state.get("storage_mode", "Session only")
-    st.caption(f"Storage: **{storage_mode}**")
-
-    if st.button("Save current country", type="primary", use_container_width=True):
-        plan = st.session_state.plans[plan_index(selected)]
-        ok, msg = save_plan(plan)
-        (st.success if ok else st.error)(msg)
-
-    if st.button("Save all countries", use_container_width=True):
-        count, errors = save_all()
-        if errors:
-            st.error("\n".join(errors[:5]))
-        else:
-            st.success(f"Saved {count} countries.")
-
-    if st.button("Reset selected country", use_container_width=True):
-        reset_country(selected)
-        st.rerun()
+    nav = st.radio("Navigation", NAV_ITEMS, label_visibility="collapsed")
 
     st.divider()
-    st.caption(
-        "For permanent online saving, configure Supabase secrets. "
-        "Without Supabase, local file saving only works reliably on your own computer."
+    st.subheader("Active Plan")
+
+    saved_keys = sorted(st.session_state.saved_plans.keys())
+    plan_options = saved_keys + ["➕ New plan"]
+    selected_key = st.selectbox(
+        "Saved plan",
+        plan_options,
+        index=plan_options.index(st.session_state.current_plan_key)
+        if st.session_state.current_plan_key in plan_options else len(plan_options)-1,
     )
 
-st.markdown("## Navigation")
+    if selected_key == "➕ New plan":
+        new_name = st.text_input("Plan name", value="New Target Plan")
+        new_month = st.text_input("Plan month", value=date.today().strftime("%Y-%m"))
+        if st.button("Create plan", type="primary", use_container_width=True):
+            key = f"{new_name} | {new_month}"
+            st.session_state.current_plan_key = key
+            st.session_state.current_plan = plan_defaults(new_name, new_month)
+            st.rerun()
+    elif selected_key != st.session_state.current_plan_key:
+        st.session_state.current_plan_key = selected_key
+        st.session_state.current_plan = st.session_state.saved_plans[selected_key]
+        st.rerun()
 
-navigation_options = [
-    "📊 Portfolio Dashboard",
-    "🧮 Country Calculator",
-    "📈 Sensitivity",
-    "📤 Data & Export",
-    "📘 Formulas",
-]
+    if st.button("Save active plan", type="primary", use_container_width=True):
+        key = st.session_state.current_plan_key
+        ok, msg = save_target_plan(key, st.session_state.current_plan)
+        if ok:
+            st.session_state.saved_plans[key] = st.session_state.current_plan
+            st.success(msg)
+        else:
+            st.error(msg)
 
-active_view = st.radio(
-    "Choose view",
-    navigation_options,
-    horizontal=True,
-    label_visibility="collapsed",
-    key="main_navigation",
-)
+    if st.button("Duplicate active plan", use_container_width=True):
+        base_key = st.session_state.current_plan_key
+        copy_key = base_key + " Copy"
+        st.session_state.current_plan_key = copy_key
+        st.session_state.current_plan = json.loads(json.dumps(st.session_state.current_plan))
+        st.rerun()
 
-st.divider()
+    if st.button("Delete active plan", use_container_width=True):
+        key = st.session_state.current_plan_key
+        ok, msg = delete_target_plan(key)
+        if ok:
+            st.session_state.saved_plans.pop(key, None)
+            st.session_state.current_plan_key = "Base Plan | 2026-06"
+            st.session_state.current_plan = plan_defaults("Base Plan", "2026-06")
+            st.rerun()
+        else:
+            st.error(msg)
 
-if active_view == "📊 Portfolio Dashboard":
-    st.title("Marketing Portfolio Dashboard")
-    portfolio = portfolio_dataframe()
+    st.divider()
+    storage = "Supabase" if get_supabase() else "Local/session"
+    st.caption(f"Storage: **{storage}**")
 
-    total_spend = portfolio["Marketing Spend"].sum()
-    total_deposits = portfolio["Net Deposits"].sum()
-    total_profit = portfolio["Net Profit"].sum()
-    total_roi = safe_div(total_deposits, total_spend)
+st.title("FTD Target Control Center")
+st.caption("Power BI–style target planning, daily actual uploads, and real-time gap control.")
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Countries", len(portfolio))
-    c2.metric("Total Leads", integer(portfolio["Leads"].sum()))
-    c3.metric("Total FTDs", integer(portfolio["FTDs"].sum()))
-    c4.metric("Marketing Spend", currency(total_spend))
-    c5.metric("Portfolio ROI", multiple(total_roi))
-    c6.metric("Net Profit", currency(total_profit))
+if nav == "🏠 Executive Overview":
+    target = target_df()
+    actual = latest_actual_by_country()
+    gap = gap_df()
 
-    st.caption("Sorted automatically by calculated leads, highest first.")
+    target_ftds = target["target_ftds"].sum()
+    actual_ftds = actual["ftds"].sum() if not actual.empty else 0
+    attainment = safe_div(actual_ftds, target_ftds)
+    target_spend = target["target_spend"].sum()
+    actual_spend = actual["marketing_cost"].sum() if not actual.empty else 0
+    target_ndp = target["target_ndp"].sum()
+    actual_ndp = actual["ndp"].sum() if not actual.empty else 0
 
-    styled = portfolio.copy()
-    styled["Potential Conversion"] = styled["Potential Conversion"].map(pct)
-    styled["Approval Ratio"] = styled["Approval Ratio"].map(pct)
-    styled["FTD Conversion"] = styled["FTD Conversion"].map(pct)
-    styled["Profit Margin"] = styled["Profit Margin"].map(pct)
-    styled["ROI"] = styled["ROI"].map(multiple)
+    st.subheader("Portfolio Scorecard")
+    c1,c2,c3,c4,c5,c6 = st.columns(6)
+    c1.metric("Target FTDs", number(target_ftds))
+    c2.metric("Actual FTDs", number(actual_ftds), delta=number(actual_ftds-target_ftds))
+    c3.metric("Attainment", pct(attainment))
+    c4.metric("Target Spend", currency(target_spend))
+    c5.metric("Actual Spend", currency(actual_spend), delta=currency(actual_spend-target_spend))
+    c6.metric("NDP Gap", currency(actual_ndp-target_ndp))
 
-    for col in ["Marketing Spend", "CPA", "PV / FTD", "Net Deposits", "PSP Cost", "Net Profit"]:
-        styled[col] = styled[col].map(currency)
-    for col in ["Leads", "Deposit Attempts", "FTDs"]:
-        styled[col] = styled[col].map(integer)
+    col1, col2 = st.columns([0.42,0.58])
+    with col1:
+        fig = go.Figure(go.Indicator(
+            mode="gauge+number+delta",
+            value=attainment*100,
+            delta={"reference":100},
+            title={"text":"FTD Attainment %"},
+            gauge={
+                "axis":{"range":[0,130]},
+                "bar":{"color":THEME["blue"]},
+                "steps":[
+                    {"range":[0,80],"color":"#FEE2E2"},
+                    {"range":[80,100],"color":"#FEF3C7"},
+                    {"range":[100,130],"color":"#DCFCE7"},
+                ],
+                "threshold":{"line":{"color":THEME["green"],"width":4},"value":100},
+            }
+        ))
+        fig.update_layout(height=340, margin=dict(l=20,r=20,t=50,b=20))
+        st.plotly_chart(fig, use_container_width=True)
 
-    st.dataframe(
-        styled,
+    with col2:
+        top_gap = gap.sort_values("ftd_gap").head(12)
+        fig = px.bar(
+            top_gap,
+            x="ftd_gap",
+            y="country",
+            orientation="h",
+            color="ftd_gap",
+            color_continuous_scale=["#DC2626","#F8FAFC","#16A34A"],
+            title="Largest FTD Gaps",
+        )
+        fig.update_layout(height=340, coloraxis_showscale=False, yaxis_title="", xaxis_title="Actual - Target FTDs")
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Country Performance Matrix")
+    matrix = gap[[
+        "country","target_ftds","ftds","ftd_gap","ftd_attainment",
+        "target_spend","marketing_cost","spend_gap",
+        "target_cpa","cpa","cpa_gap","target_ndp","ndp","ndp_gap"
+    ]].sort_values("target_ftds", ascending=False)
+
+    display = matrix.copy()
+    for c in ["target_ftds","ftds","ftd_gap"]:
+        display[c] = display[c].map(number)
+    display["ftd_attainment"] = display["ftd_attainment"].map(pct)
+    for c in ["target_spend","marketing_cost","spend_gap","target_cpa","cpa","cpa_gap","target_ndp","ndp","ndp_gap"]:
+        display[c] = display[c].map(currency)
+
+    display.columns = [
+        "Country","Target FTDs","Actual FTDs","FTD Gap","Attainment",
+        "Target Spend","Actual Spend","Spend Gap","Target CPA","Actual CPA","CPA Gap",
+        "Target NDP","Actual NDP","NDP Gap"
+    ]
+    st.dataframe(display, use_container_width=True, hide_index=True, height=580)
+
+elif nav == "🎯 Target Planner":
+    st.subheader(f"Target Planner — {st.session_state.current_plan_key}")
+
+    plan_df = pd.DataFrame(st.session_state.current_plan)
+    editor_cols = [
+        "country","target_ftds","potential_conversion","approval_ratio",
+        "cpl","pv_per_ftd","psp_fee","variable_cost_per_ftd","fixed_cost"
+    ]
+
+    edited = st.data_editor(
+        plan_df[editor_cols],
         use_container_width=True,
         hide_index=True,
         height=620,
+        disabled=["country"],
         column_config={
-            "Country": st.column_config.TextColumn("Country", pinned=True),
+            "country": st.column_config.TextColumn("Country", pinned=True),
+            "target_ftds": st.column_config.NumberColumn("Target FTDs", min_value=0, step=10),
+            "potential_conversion": st.column_config.NumberColumn("Potential Conversion", min_value=0, max_value=1, format="%.2f"),
+            "approval_ratio": st.column_config.NumberColumn("Approval Ratio", min_value=0, max_value=1, format="%.2f"),
+            "cpl": st.column_config.NumberColumn("CPL", min_value=0, format="$%.2f"),
+            "pv_per_ftd": st.column_config.NumberColumn("PV / FTD", min_value=0, format="$%.2f"),
+            "psp_fee": st.column_config.NumberColumn("PSP Fee", min_value=0, max_value=1, format="%.3f"),
+            "variable_cost_per_ftd": st.column_config.NumberColumn("Variable Cost / FTD", min_value=0, format="$%.2f"),
+            "fixed_cost": st.column_config.NumberColumn("Fixed Cost", min_value=0, format="$%.2f"),
         },
+        key="target_editor",
     )
 
-    chart_df = portfolio.head(15).set_index("Country")[["Leads", "FTDs"]]
-    st.subheader("Top 15 Countries by Leads")
-    st.bar_chart(chart_df)
+    lookup = {r["country"]: r for r in st.session_state.current_plan}
+    for _, r in edited.iterrows():
+        country = r["country"]
+        for c in editor_cols[1:]:
+            lookup[country][c] = float(r[c])
+    st.session_state.current_plan = list(lookup.values())
 
-elif active_view == "🧮 Country Calculator":
-    idx = plan_index(selected)
-    plan = st.session_state.plans[idx]
-    calc = calculate(plan)
+    t = target_df().sort_values("target_ftds", ascending=False)
 
-    st.title(f"{selected} Calculator")
-
-    left, right = st.columns([0.34, 0.66], gap="large")
-
-    with left:
-        st.subheader("Planning Inputs")
-
-        driver = st.selectbox(
-            "Primary driver",
-            DRIVERS,
-            index=DRIVERS.index(plan["driver"]),
-            key=f"driver_{selected}",
-        )
-        update_plan(selected, "driver", driver)
-
-        if driver == "Marketing Budget":
-            driver_value = st.number_input(
-                "Marketing budget ($ / month)",
-                min_value=0.0,
-                value=float(plan["driver_value"]),
-                step=1000.0,
-                key=f"driver_value_{selected}",
-            )
-        elif driver == "Target FTDs":
-            driver_value = st.number_input(
-                "Target FTDs",
-                min_value=0.0,
-                value=float(plan["driver_value"]),
-                step=10.0,
-                key=f"driver_value_{selected}",
-            )
-        else:
-            driver_value = st.number_input(
-                "Leads purchased",
-                min_value=0.0,
-                value=float(plan["driver_value"]),
-                step=100.0,
-                key=f"driver_value_{selected}",
-            )
-        update_plan(selected, "driver_value", driver_value)
-
-        cpl = st.number_input(
-            "CPL ($ / lead)",
-            min_value=0.0,
-            value=float(plan["cpl"]),
-            step=1.0,
-            key=f"cpl_{selected}",
-        )
-        update_plan(selected, "cpl", cpl)
-
-        potential = st.slider(
-            "Potential conversion / deposit attempt rate",
-            0.0, 1.0, float(plan["potential_conversion"]), 0.001,
-            key=f"potential_{selected}",
-            help="Percentage of leads who attempt a deposit.",
-        )
-        update_plan(selected, "potential_conversion", potential)
-
-        approval = st.slider(
-            "Approval ratio",
-            0.0, 1.0, float(plan["approval_ratio"]), 0.01,
-            key=f"approval_{selected}",
-            help="Percentage of deposit attempts that are approved.",
-        )
-        update_plan(selected, "approval_ratio", approval)
-
-        pv = st.number_input(
-            "PV / net deposit per FTD ($)",
-            min_value=0.0,
-            value=float(plan["pv_per_ftd"]),
-            step=100.0,
-            key=f"pv_{selected}",
-        )
-        update_plan(selected, "pv_per_ftd", pv)
-
-        psp = st.slider(
-            "PSP fee",
-            0.0, 0.25, float(plan["psp_fee"]), 0.005,
-            key=f"psp_{selected}",
-        )
-        update_plan(selected, "psp_fee", psp)
-
-        variable = st.number_input(
-            "Other variable cost per FTD ($)",
-            min_value=0.0,
-            value=float(plan["variable_cost_per_ftd"]),
-            step=10.0,
-            key=f"variable_{selected}",
-        )
-        update_plan(selected, "variable_cost_per_ftd", variable)
-
-        fixed = st.number_input(
-            "Fixed monthly cost ($)",
-            min_value=0.0,
-            value=float(plan["fixed_monthly_cost"]),
-            step=1000.0,
-            key=f"fixed_{selected}",
-        )
-        update_plan(selected, "fixed_monthly_cost", fixed)
-
-        # Recalculate after controls update.
-        plan = st.session_state.plans[idx]
-        calc = calculate(plan)
-
-    with right:
-        st.subheader("Live Performance")
-
-        rows = [
-            ("FTD Conversion", pct(calc["ftd_conversion"]), "Potential × approval"),
-            ("Leads", integer(calc["leads"]), "Purchased traffic"),
-            ("Deposit Attempts", integer(calc["deposit_attempts"]), pct(plan["potential_conversion"]) + " of leads"),
-            ("FTDs", integer(calc["ftds"]), pct(plan["approval_ratio"]) + " approved"),
-            ("Marketing Spend", currency(calc["marketing_spend"]), "Monthly"),
-            ("CPA", currency(calc["cpa"]), "Cost per FTD"),
-            ("Net Deposits", currency(calc["net_deposits"]), "FTDs × PV"),
-            ("ROI", multiple(calc["roi"]), "Deposits ÷ spend"),
-            ("PSP Cost", currency(calc["psp_cost"]), "Processing"),
-            ("Net Profit", currency(calc["net_profit"]), "After costs"),
-            ("Profit / FTD", currency(calc["profit_per_ftd"]), "After costs"),
-            ("Profit Margin", pct(calc["profit_margin"]), "Profit ÷ deposits"),
-        ]
-
-        for row_start in range(0, len(rows), 4):
-            cols = st.columns(4)
-            for col, item in zip(cols, rows[row_start:row_start + 4]):
-                col.metric(item[0], item[1], help=item[2])
-
-        st.subheader("Decision Support")
-        d1, d2, d3, d4 = st.columns(4)
-        d1.metric("Break-even CPA", currency(calc["break_even_cpa"]))
-        d2.metric("Break-even CPL", currency(calc["break_even_cpl"]))
-        d3.metric("Max Profitable Spend", currency(calc["max_profitable_spend"]))
-        d4.metric("Budget Headroom", currency(calc["budget_headroom"]))
-
-        funnel = pd.DataFrame(
-            {
-                "Stage": ["Leads", "Deposit Attempts", "FTDs"],
-                "Volume": [calc["leads"], calc["deposit_attempts"], calc["ftds"]],
-            }
-        ).set_index("Stage")
-        st.subheader("Funnel")
-        st.bar_chart(funnel)
-
-        with st.expander("Original report reference"):
-            st.write({
-                "Report leads": integer(plan["report_leads"]),
-                "Report FTDs": integer(plan["report_ftds"]),
-                "Report conversion": pct(plan["report_conversion_rate"]),
-                "Report marketing cost": currency(plan["report_marketing_cost"]),
-                "Report CPA": currency(plan["report_cpa"]),
-                "Report ROI": multiple(plan["report_roi"]),
-                "Report NDP": currency(plan["report_ndp"]),
-            })
-
-elif active_view == "📈 Sensitivity":
-    idx = plan_index(selected)
-    plan = st.session_state.plans[idx]
-
-    st.title(f"{selected} Approval-Ratio Sensitivity")
-    levels = [x / 100 for x in range(5, 101, 5)]
-    rows = []
-
-    for ar in levels:
-        scenario = dict(plan)
-        scenario["approval_ratio"] = ar
-        calc = calculate(scenario)
-        rows.append({
-            "Approval Ratio": ar,
-            "Potential Conversion": scenario["potential_conversion"],
-            "FTD Conversion": calc["ftd_conversion"],
-            "Leads": calc["leads"],
-            "Deposit Attempts": calc["deposit_attempts"],
-            "FTDs": calc["ftds"],
-            "Marketing Spend": calc["marketing_spend"],
-            "CPA": calc["cpa"],
-            "Net Deposits": calc["net_deposits"],
-            "ROI": calc["roi"],
-            "PSP Cost": calc["psp_cost"],
-            "Net Profit": calc["net_profit"],
-        })
-
-    sensitivity = pd.DataFrame(rows)
-
-    view = sensitivity.copy()
-    for col in ["Approval Ratio", "Potential Conversion", "FTD Conversion"]:
-        view[col] = view[col].map(pct)
-    for col in ["Leads", "Deposit Attempts", "FTDs"]:
-        view[col] = view[col].map(integer)
-    for col in ["Marketing Spend", "CPA", "Net Deposits", "PSP Cost", "Net Profit"]:
-        view[col] = view[col].map(currency)
-    view["ROI"] = view["ROI"].map(multiple)
-
-    st.dataframe(view, use_container_width=True, hide_index=True, height=600)
-
-    st.subheader("FTDs by Approval Ratio")
-    st.line_chart(sensitivity.set_index("Approval Ratio")[["FTDs"]])
-
-    st.subheader("Net Profit by Approval Ratio")
-    st.line_chart(sensitivity.set_index("Approval Ratio")[["Net Profit"]])
-
-elif active_view == "📤 Data & Export":
-    st.title("Data, Backup & Export")
-
-    portfolio = portfolio_dataframe()
-    csv = portfolio.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "Download portfolio dashboard as CSV",
-        data=csv,
-        file_name="marketing_portfolio_dashboard.csv",
-        mime="text/csv",
-        type="primary",
+    st.subheader("CPA Driver Calculator")
+    st.caption(
+        "CPA updates automatically from the complete funnel: "
+        "CPA = CPL ÷ (Potential Conversion × Approval Ratio)."
     )
 
-    backup = json.dumps(st.session_state.plans, indent=2).encode("utf-8")
-    st.download_button(
-        "Download all country assumptions as JSON",
-        data=backup,
-        file_name="marketing_country_plans_backup.json",
-        mime="application/json",
+    selected_calc_country = st.selectbox(
+        "Country for CPA simulation",
+        sorted(t["country"].tolist()),
+        key="cpa_sim_country",
     )
+    sim_row = t[t["country"] == selected_calc_country].iloc[0]
 
-    uploaded = st.file_uploader("Restore assumptions from JSON backup", type=["json"])
-    if uploaded is not None:
-        try:
-            restored = json.load(uploaded)
-            countries = {p["country"] for p in load_baseline()}
-            restored_countries = {p["country"] for p in restored}
-            if countries != restored_countries:
-                st.error("Backup country list does not match the app.")
-            elif st.button("Apply restored backup"):
-                st.session_state.plans = restored
-                st.success("Backup restored. Save all countries to persist it.")
-                st.rerun()
-        except Exception as exc:
-            st.error(f"Could not read backup: {exc}")
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("CPL", currency(sim_row["cpl"]))
+    s2.metric("Potential Conversion", pct(sim_row["potential_conversion"]))
+    s3.metric("Approval Ratio", pct(sim_row["approval_ratio"]))
+    s4.metric("Calculated CPA", currency(sim_row["target_cpa"]))
 
-    st.subheader("Current storage status")
-    if get_supabase() is not None:
-        st.success("Supabase is configured. Country changes can be saved permanently online.")
-    else:
-        st.warning(
-            "Supabase is not configured. Streamlit Cloud may erase local files whenever the app restarts. "
-            "Use the included Supabase setup guide for permanent shared data."
-        )
-
-elif active_view == "📘 Formulas":
-    st.title("Formula Reference")
     st.markdown(
-        """
-- **Deposit attempts** = Leads × Potential conversion %
-- **FTDs** = Deposit attempts × Approval ratio
-- **FTD conversion rate** = Potential conversion % × Approval ratio
-- **Marketing spend** = Leads × CPL
-- **CPA** = Marketing spend ÷ FTDs
-- **Net deposits** = FTDs × PV per FTD
-- **ROI** = Net deposits ÷ Marketing spend
-- **PSP cost** = Net deposits × PSP fee
-- **Net marketing profit** = Net deposits − Marketing spend − PSP cost − Variable costs − Fixed costs
-- **Break-even CPA** = PV per FTD × (1 − PSP fee) − Variable cost per FTD
-- **Break-even CPL** = Break-even CPA × FTD conversion rate
+        f"""
+        **{selected_calc_country} calculation**
+
+        `{currency(sim_row["cpl"])} ÷ ({pct(sim_row["potential_conversion"])} × {pct(sim_row["approval_ratio"])}) = {currency(sim_row["target_cpa"])}`
+
+        Final lead-to-FTD conversion: **{pct(sim_row["target_conversion"])}**
         """
     )
+
+    st.subheader("Target Economics")
+    c1,c2,c3,c4,c5 = st.columns(5)
+    c1.metric("Target FTDs", number(t["target_ftds"].sum()))
+    c2.metric("Required Leads", number(t["target_leads"].sum()))
+    c3.metric("Marketing Spend", currency(t["target_spend"].sum()))
+    c4.metric("Target NDP", currency(t["target_ndp"].sum()))
+    c5.metric("Target Profit", currency(t["target_profit"].sum()))
+
+    fig = px.treemap(
+        t[t["target_ftds"]>0],
+        path=["country"],
+        values="target_ftds",
+        color="target_roi",
+        color_continuous_scale="Blues",
+        title="Target FTD Allocation by Country",
+    )
+    fig.update_layout(height=520)
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("CPA Sensitivity Heatmap")
+    selected_plan_row = next(
+        r for r in st.session_state.current_plan
+        if r["country"] == selected_calc_country
+    )
+    approval_levels = [x / 100 for x in range(10, 101, 5)]
+    potential_levels = [x / 100 for x in range(5, 51, 5)]
+    heat_rows = []
+    for potential_level in potential_levels:
+        heat_rows.append([
+            safe_div(
+                float(selected_plan_row["cpl"]),
+                potential_level * approval_level,
+            )
+            for approval_level in approval_levels
+        ])
+
+    heatmap = go.Figure(
+        data=go.Heatmap(
+            z=heat_rows,
+            x=[f"{x*100:.0f}%" for x in approval_levels],
+            y=[f"{x*100:.0f}%" for x in potential_levels],
+            colorscale="RdYlGn_r",
+            colorbar={"title": "CPA ($)"},
+            hovertemplate=(
+                "Approval: %{x}<br>"
+                "Potential conversion: %{y}<br>"
+                "CPA: $%{z:,.2f}<extra></extra>"
+            ),
+        )
+    )
+    heatmap.update_layout(
+        height=520,
+        xaxis_title="Approval Ratio",
+        yaxis_title="Potential Conversion / Deposit Attempt Rate",
+    )
+    st.plotly_chart(heatmap, use_container_width=True)
+
+elif nav == "📊 Actual Data":
+    st.subheader("Daily Actual Data Upload")
+    st.info(
+        "Upload the same Excel structure as your original report, or a CSV/XLSX with columns: "
+        "Country, Leads, FTDs, Marketing Cost, NDP. Date is optional."
+    )
+
+    col1, col2 = st.columns([0.35,0.65])
+    with col1:
+        snapshot_date = st.date_input("Snapshot date", value=date.today())
+        uploaded = st.file_uploader("Upload actual data", type=["xlsx","xls","csv"])
+
+        if uploaded:
+            try:
+                parsed = parse_uploaded_file(uploaded, snapshot_date)
+                st.success(f"Recognized {len(parsed)} country rows.")
+                st.dataframe(parsed.head(10), use_container_width=True, hide_index=True)
+
+                if st.button("Save uploaded actual data", type="primary"):
+                    rows = parsed.to_dict("records")
+                    ok, msg = save_actual_rows(rows)
+                    if ok:
+                        existing = {(r["snapshot_date"],r["country"]):r for r in st.session_state.actual_rows}
+                        for r in rows:
+                            existing[(r["snapshot_date"],r["country"])] = r
+                        st.session_state.actual_rows = list(existing.values())
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            except Exception as exc:
+                st.error(str(exc))
+
+    with col2:
+        actual = actual_df()
+        if actual.empty:
+            st.warning("No actual snapshots uploaded yet.")
+        else:
+            latest_date = actual["snapshot_date"].max().date()
+            st.metric("Latest Snapshot", latest_date.strftime("%d %b %Y"))
+            trend = actual.groupby("snapshot_date", as_index=False)[["leads","ftds","marketing_cost","ndp"]].sum()
+            fig = px.line(trend, x="snapshot_date", y=["ftds","leads"], markers=True, title="Portfolio Actual Trend")
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.subheader("Uploaded Snapshots")
+            summary = actual.groupby("snapshot_date", as_index=False).agg(
+                countries=("country","nunique"),
+                leads=("leads","sum"),
+                ftds=("ftds","sum"),
+                marketing_cost=("marketing_cost","sum"),
+                ndp=("ndp","sum"),
+            ).sort_values("snapshot_date", ascending=False)
+            st.dataframe(summary, use_container_width=True, hide_index=True)
+
+elif nav == "⚖️ Gap Analysis":
+    st.subheader("Reality vs Target Gap Control")
+    gap = gap_df()
+
+    if latest_actual_by_country().empty:
+        st.warning("Upload actual data first.")
+    else:
+        filters = st.columns(3)
+        with filters[0]:
+            min_attain = st.slider("Minimum attainment filter", 0.0, 1.5, 0.0, 0.05)
+        with filters[1]:
+            only_negative = st.checkbox("Only countries below target")
+        with filters[2]:
+            top_n = st.number_input("Top countries", 5, 29, 15)
+
+        filtered = gap[gap["ftd_attainment"] >= min_attain]
+        if only_negative:
+            filtered = filtered[filtered["ftd_gap"] < 0]
+        filtered = filtered.sort_values("ftd_gap").head(int(top_n))
+
+        c1,c2,c3,c4 = st.columns(4)
+        c1.metric("Total FTD Gap", number(gap["ftd_gap"].sum()))
+        c2.metric("Spend Gap", currency(gap["spend_gap"].sum()))
+        c3.metric("NDP Gap", currency(gap["ndp_gap"].sum()))
+        c4.metric("Countries Below Target", int((gap["ftd_gap"]<0).sum()))
+
+        fig = px.bar(
+            filtered,
+            x="country",
+            y=["target_ftds","ftds"],
+            barmode="group",
+            title="Target vs Actual FTDs",
+            labels={"value":"FTDs","variable":"Series"},
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        heat = gap[["country","ftd_attainment","cpa_gap","spend_gap","ndp_gap"]].copy()
+        heat = heat.sort_values("ftd_attainment")
+        fig = px.scatter(
+            heat,
+            x="ftd_attainment",
+            y="cpa_gap",
+            size=heat["spend_gap"].abs()+1,
+            color="ndp_gap",
+            hover_name="country",
+            color_continuous_scale=["#DC2626","#F8FAFC","#16A34A"],
+            title="Gap Risk Map",
+            labels={"ftd_attainment":"FTD Attainment","cpa_gap":"CPA Gap"},
+        )
+        fig.add_vline(x=1, line_dash="dash", line_color="#16A34A")
+        fig.add_hline(y=0, line_dash="dash", line_color="#64748B")
+        st.plotly_chart(fig, use_container_width=True)
+
+        export = gap.to_csv(index=False).encode()
+        st.download_button("Download complete gap report", export, "ftd_gap_report.csv", "text/csv")
+
+elif nav == "🌍 Country Drilldown":
+    st.subheader("Country Drilldown")
+    countries = sorted([r["country"] for r in current_plan_rows()])
+    selected_country = st.selectbox("Country", countries)
+
+    target = target_df()
+    trow = target[target["country"]==selected_country].iloc[0]
+    actual_all = actual_df()
+    country_actual = actual_all[actual_all["country"]==selected_country].sort_values("snapshot_date")
+
+    if country_actual.empty:
+        arow = pd.Series({c:0 for c in ["ftds","leads","marketing_cost","cpa","ndp","roi"]})
+    else:
+        arow = country_actual.iloc[-1]
+
+    c1,c2,c3,c4,c5,c6 = st.columns(6)
+    c1.metric("Target FTDs", number(trow["target_ftds"]))
+    c2.metric("Actual FTDs", number(arow["ftds"]), delta=number(arow["ftds"]-trow["target_ftds"]))
+    c3.metric("Target CPA", currency(trow["target_cpa"]))
+    c4.metric("Actual CPA", currency(arow["cpa"]), delta=currency(arow["cpa"]-trow["target_cpa"]))
+    c5.metric("Target Spend", currency(trow["target_spend"]))
+    c6.metric("Actual Spend", currency(arow["marketing_cost"]), delta=currency(arow["marketing_cost"]-trow["target_spend"]))
+
+    if not country_actual.empty:
+        fig = px.line(
+            country_actual,
+            x="snapshot_date",
+            y=["ftds","leads","marketing_cost","ndp"],
+            markers=True,
+            title=f"{selected_country} Actual Trend",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="Target", x=["FTDs","Leads","Spend","NDP"], y=[
+        trow["target_ftds"], trow["target_leads"], trow["target_spend"], trow["target_ndp"]
+    ]))
+    fig.add_trace(go.Bar(name="Actual", x=["FTDs","Leads","Spend","NDP"], y=[
+        arow["ftds"], arow["leads"], arow["marketing_cost"], arow["ndp"]
+    ]))
+    fig.update_layout(barmode="group", title=f"{selected_country} Target vs Actual")
+    st.plotly_chart(fig, use_container_width=True)
+
+elif nav == "🧪 Plan Comparison":
+    st.subheader("Saved Plan Comparison")
+    keys = sorted(st.session_state.saved_plans.keys())
+    if len(keys) < 2:
+        st.warning("Save at least two plans to compare them.")
+    else:
+        selected = st.multiselect("Choose plans", keys, default=keys[:2], max_selections=4)
+        rows = []
+        for key in selected:
+            for row in st.session_state.saved_plans[key]:
+                calc = calculate_target(row)
+                rows.append({"plan":key,"country":row["country"],**calc})
+        comp = pd.DataFrame(rows)
+        if not comp.empty:
+            summary = comp.groupby("plan", as_index=False).agg(
+                target_ftds=("target_ftds","sum"),
+                target_leads=("target_leads","sum"),
+                target_spend=("target_spend","sum"),
+                target_ndp=("target_ndp","sum"),
+                target_profit=("target_profit","sum"),
+            )
+            st.dataframe(summary, use_container_width=True, hide_index=True)
+            fig = px.bar(summary, x="plan", y=["target_ftds","target_spend","target_profit"], barmode="group")
+            st.plotly_chart(fig, use_container_width=True)
+
+elif nav == "📤 Data Hub":
+    st.subheader("Data Hub")
+    c1,c2,c3 = st.columns(3)
+
+    with c1:
+        target_csv = target_df().to_csv(index=False).encode()
+        st.download_button("Download active target plan", target_csv, "active_target_plan.csv", "text/csv", use_container_width=True)
+    with c2:
+        actual_csv = actual_df().to_csv(index=False).encode()
+        st.download_button("Download all actual data", actual_csv, "actual_snapshots.csv", "text/csv", use_container_width=True)
+    with c3:
+        gap_csv = gap_df().to_csv(index=False).encode()
+        st.download_button("Download gap report", gap_csv, "gap_report.csv", "text/csv", use_container_width=True)
+
+    st.subheader("Backup")
+    backup = {
+        "saved_plans": st.session_state.saved_plans,
+        "actual_rows": st.session_state.actual_rows,
+    }
+    st.download_button(
+        "Download complete app backup",
+        json.dumps(backup, indent=2).encode(),
+        "ftd_control_center_backup.json",
+        "application/json",
+    )
+
+    uploaded_backup = st.file_uploader("Restore complete backup", type=["json"])
+    if uploaded_backup and st.button("Restore backup"):
+        data = json.load(uploaded_backup)
+        st.session_state.saved_plans = data.get("saved_plans", {})
+        st.session_state.actual_rows = data.get("actual_rows", [])
+        st.success("Backup restored. Save plans and actual data to persist.")
+
+elif nav == "⚙️ Settings":
+    st.subheader("Settings & Data Format")
+
+    st.markdown("""
+### Daily upload format
+
+The app accepts `.xlsx`, `.xls`, or `.csv`.
+
+Minimum recommended columns:
+
+| Column | Meaning |
+|---|---|
+| Country | Country name |
+| Leads | Actual leads |
+| FTDs | Actual first-time depositors |
+| Marketing Cost | Actual marketing spend |
+| NDP | Actual net deposits |
+
+Optional columns:
+
+- Date
+- Conversion Rate
+- CPL
+- CPA
+- ROI
+
+The original report format is also supported automatically:
+
+- Row Labels
+- Leads
+- FTD #
+- CR %
+- COST
+- CPL
+- Avg CPA
+- ROI
+- NDP$
+    """)
+
+    if get_supabase():
+        st.success("Supabase is configured. Plans and actuals can persist online.")
+    else:
+        st.warning("Supabase is not configured. Streamlit Cloud may reset local data.")
+
+    st.markdown("""
+### Navigation and workflow
+
+1. Create or select a saved plan.
+2. Set Target FTDs, CPL, Potential Conversion, and Approval Ratio.
+3. CPA recalculates automatically as CPL ÷ (Potential Conversion × Approval Ratio).
+4. Save the plan.
+5. Upload actual data every day.
+6. Open Gap Analysis to compare reality against target.
+7. Use Country Drilldown and Plan Comparison for deeper analysis.
+    """)
