@@ -280,6 +280,47 @@ st.markdown(
         background: rgba(128,128,128,.04);
       }
       .small-note {color: #777; font-size: .85rem;}
+
+      /* Keep Streamlit tab labels visible across light/dark/browser themes */
+      div[data-baseweb="tab-list"] {
+        gap: 0.35rem;
+        border-bottom: 1px solid rgba(128,128,128,.25);
+        margin-bottom: 0.75rem;
+      }
+
+      button[data-baseweb="tab"] {
+        min-height: 48px;
+        padding: 0.65rem 1rem;
+        border-radius: 10px 10px 0 0;
+      }
+
+      button[data-baseweb="tab"] p,
+      button[data-baseweb="tab"] span {
+        color: #374151 !important;
+        font-weight: 650 !important;
+        opacity: 1 !important;
+      }
+
+      button[data-baseweb="tab"][aria-selected="true"] {
+        background: rgba(37, 99, 235, 0.08);
+      }
+
+      button[data-baseweb="tab"][aria-selected="true"] p,
+      button[data-baseweb="tab"][aria-selected="true"] span {
+        color: #2563EB !important;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        button[data-baseweb="tab"] p,
+        button[data-baseweb="tab"] span {
+          color: #E5E7EB !important;
+        }
+
+        button[data-baseweb="tab"][aria-selected="true"] p,
+        button[data-baseweb="tab"][aria-selected="true"] span {
+          color: #60A5FA !important;
+        }
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -321,7 +362,13 @@ with st.sidebar:
     )
 
 tab_dashboard, tab_calculator, tab_sensitivity, tab_data, tab_formulas = st.tabs(
-    ["Portfolio Dashboard", "Country Calculator", "Sensitivity", "Data & Export", "Formulas"]
+    [
+        "📊 Portfolio Dashboard",
+        "🧮 Country Calculator",
+        "📈 Sensitivity",
+        "📤 Data & Export",
+        "📘 Formulas",
+    ]
 )
 
 with tab_dashboard:

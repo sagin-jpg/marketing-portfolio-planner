@@ -67,3 +67,8 @@ streamlit run app.py
 ```
 
 Local changes are saved to `country_plans.local.json` when Supabase is not configured.
+
+
+## Navigation fix
+
+This build adds visible icon-based top navigation and explicit tab label styling.
