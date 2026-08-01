@@ -652,6 +652,7 @@ if nav == "🏠 Executive Overview":
     matrix = gap[[
         "country","target_ftds","ftds","ftd_gap","ftd_attainment",
         "target_spend","marketing_cost","spend_gap",
+        "target_leads","target_attempts",
         "cpl","potential_conversion","approval_ratio","target_conversion",
         "target_cpa","cpa","cpa_gap","target_ndp","ndp","ndp_gap",
         "target_gross_profitability","actual_gross_profitability",
@@ -675,22 +676,22 @@ if nav == "🏠 Executive Overview":
         "target_spend": total_target_spend,
         "marketing_cost": total_actual_spend,
         "spend_gap": total_actual_spend - total_target_spend,
-        "cpl": safe_div(total_target_spend, matrix["target_leads"].sum()),
+        "cpl": safe_div(total_target_spend, matrix.get("target_leads", pd.Series(dtype=float)).sum()),
         "potential_conversion": safe_div(
-            matrix["target_attempts"].sum(),
-            matrix["target_leads"].sum(),
+            matrix.get("target_attempts", pd.Series(dtype=float)).sum(),
+            matrix.get("target_leads", pd.Series(dtype=float)).sum(),
         ),
         "approval_ratio": safe_div(
             total_target_ftds,
-            matrix["target_attempts"].sum(),
+            matrix.get("target_attempts", pd.Series(dtype=float)).sum(),
         ),
         "target_conversion": safe_div(
             total_target_ftds,
-            matrix["target_leads"].sum(),
+            matrix.get("target_leads", pd.Series(dtype=float)).sum(),
         ),
         "target_cpa": safe_div(
-            safe_div(total_target_spend, matrix["target_leads"].sum()),
-            safe_div(total_target_ftds, matrix["target_leads"].sum()),
+            safe_div(total_target_spend, matrix.get("target_leads", pd.Series(dtype=float)).sum()),
+            safe_div(total_target_ftds, matrix.get("target_leads", pd.Series(dtype=float)).sum()),
         ),
         "cpa": safe_div(total_actual_spend, total_actual_ftds),
         "cpa_gap": (

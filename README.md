@@ -86,3 +86,8 @@ Target CPA is calculated everywhere using:
 `CPA = CPL ÷ Final Conversion`
 
 The same calculation drives the Target Planner, Executive Overview, country totals, Gap Analysis, and Country Drilldown. CPA is not manually editable in the target model.
+
+
+## Hotfix
+
+Fixed Executive matrix KeyError by including target leads and target attempts in the matrix dataframe.
